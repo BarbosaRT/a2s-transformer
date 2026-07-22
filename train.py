@@ -127,10 +127,10 @@ def train(
     ckpt_path = f"weights/{model_type}/{ds_name}.ckpt"
     resume_ckpt = ckpt_path if os.path.exists(ckpt_path) else None
     if resume_ckpt and use_checkpoint:
-        print(f\"Resuming from checkpoint: {resume_ckpt}\")
+        print(f"Resuming from checkpoint: {resume_ckpt}")
         trainer.fit(model, datamodule=datamodule, ckpt_path=resume_ckpt)
     else:
-        print(\"No checkpoint found, starting fresh.\")    
+        print("No checkpoint found, starting fresh.")    
         trainer.fit(model, datamodule=datamodule)
     
     if model_type == "crnn":
