@@ -140,34 +140,42 @@ class A2STransformer(LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        x, y = batch
-        assert x.size(0) == 1, "Inference only supports batch_size = 1"
+        x, xl, y = batch
+        B = x.size(0)
+        device = x.device
 
-        # Encoder
+        # Encoder (same as forward())
         x = self.encoder(x=x)
-        # Prepare for decoder
-        # 2D PE + flatten + permute
         x = self.pos_2d(x)
-        x = x.flatten(2).permute(0, 2, 1).contiguous()
-        # Autoregressive decoding
-        y_in = torch.tensor([self.w2i[SOS_TOKEN]]).unsqueeze(0).long().to(x.device)
-        yhat = []
+        x = x.flatten(2).permute(0, 2, 1).contiguous()  # memory: [B, S, C]
+
+        sos = self.w2i[SOS_TOKEN]
+        eos = self.w2i[EOS_TOKEN]
+
+        y_in = torch.full((B, 1), sos, dtype=torch.long, device=device)
+        finished = torch.zeros(B, dtype=torch.bool, device=device)
+        decoded = [[] for _ in range(B)]
+
         for _ in range(self.max_seq_len):
-            y_out_hat = self.decoder(tgt=y_in, memory=x, memory_len=None)
-            y_out_hat = y_out_hat[0, :, -1]  # Last token
-            y_out_hat_token = y_out_hat.argmax(dim=-1).item()
-            y_out_hat_word = self.i2w[y_out_hat_token]
-            yhat.append(y_out_hat_word)
-            if y_out_hat_word == EOS_TOKEN:
+            y_out_hat = self.decoder(tgt=y_in, memory=x, memory_len=xl)  # [B, vocab, T]
+            next_tok = y_out_hat[:, :, -1].argmax(dim=-1)  # [B]
+
+            for i in range(B):
+                if not finished[i]:
+                    tok_id = next_tok[i].item()
+                    decoded[i].append(self.i2w[tok_id])
+                    if tok_id == eos:
+                        finished[i] = True
+
+            if finished.all():
                 break
 
-            y_in = torch.cat([y_in, torch.tensor([[y_out_hat_token]]).long().to(x.device)], dim=1)
+            y_in = torch.cat([y_in, next_tok.unsqueeze(1)], dim=1)
 
-        # Decoded ground truth
-        y = [self.ytest_i2w[i.item()] for i in y[0][1:]]  # Remove SOS_TOKEN
-        # Append to later compute metrics
-        self.Y.append(y)
-        self.YHat.append(yhat)
+        for i in range(B):
+            y_true = [self.ytest_i2w[t.item()] for t in y[i][1:]]  # drop SOS
+            self.Y.append(y_true)
+            self.YHat.append(decoded[i])
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):

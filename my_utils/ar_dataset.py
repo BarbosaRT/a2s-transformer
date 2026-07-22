@@ -1,15 +1,27 @@
 import math
-
+import os
 import torch
 from torch.utils.data import DataLoader
 from lightning.pytorch import LightningDataModule
 
 from my_utils.ctc_dataset import CTCDataset, load_dataset, SPLITS
-from my_utils.data_preprocessing import preprocess_audio, ar_batch_preparation
+from my_utils.data_preprocessing import preprocess_audio, ar_batch_preparation, pad_batch_audios, IMG_HEIGHT
 from networks.transformer.encoder import HEIGHT_REDUCTION, WIDTH_REDUCTION
-
+import math
+    
 SOS_TOKEN = "<SOS>"  # Start-of-sequence token
 EOS_TOKEN = "<EOS>"  # End-of-sequence token
+
+
+def ar_val_batch_preparation(batch):
+    x, y = zip(*batch)
+    xl = [
+        math.ceil(IMG_HEIGHT / HEIGHT_REDUCTION) * math.ceil(xi.shape[2] / WIDTH_REDUCTION)
+        for xi in x
+    ]
+    x = pad_batch_audios(x, dtype=torch.float32)
+    xl = torch.tensor(xl, dtype=torch.int64)
+    return x, xl, list(y)
 
 
 class ARDataModule(LightningDataModule):
@@ -18,13 +30,13 @@ class ARDataModule(LightningDataModule):
         ds_name: str,
         use_voice_change_token: bool = False,
         batch_size: int = 16,
-        num_workers: int = 20,
+        num_workers: int = None,
     ):
         super(ARDataModule, self).__init__()
         self.ds_name = ds_name
         self.use_voice_change_token = use_voice_change_token
         self.batch_size = batch_size
-        self.num_workers = num_workers
+        self.num_workers = num_workers if num_workers is not None else min(4, os.cpu_count() or 4)
 
         # Datasets
         # To prevent executing setup() twice
@@ -60,16 +72,21 @@ class ARDataModule(LightningDataModule):
             self.train_ds,
             batch_size=self.batch_size,
             shuffle=True,
-            num_workers=self.num_workers,
+            num_workers=self.num_workers,            
             collate_fn=ar_batch_preparation,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
         )  # prefetch_factor=2
 
     def val_dataloader(self):
         return DataLoader(
             self.val_ds,
-            batch_size=1,
+            batch_size=self.batch_size,
             shuffle=False,
+            collate_fn=ar_val_batch_preparation,
             num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
         )  # prefetch_factor=2
 
     def test_dataloader(self):
@@ -77,7 +94,10 @@ class ARDataModule(LightningDataModule):
             self.test_ds,
             batch_size=1,
             shuffle=False,
+            collate_fn=ar_val_batch_preparation,
             num_workers=self.num_workers,
+            pin_memory=True,
+            persistent_workers=self.num_workers > 0,
         )  # prefetch_factor=2
 
     def predict_dataloader(self):
