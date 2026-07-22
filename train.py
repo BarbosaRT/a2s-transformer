@@ -12,6 +12,8 @@ from my_utils.ctc_dataset import CTCDataModule
 from my_utils.ar_dataset import ARDataModule
 from my_utils.seed import seed_everything
 
+
+torch.set_float32_matmul_precision("high")
 seed_everything(42, benchmark=False)
 
 
@@ -106,7 +108,7 @@ def train(
             mode="min",
             strict=True,
             check_finite=True,
-            divergence_threshold=100.00,
+            divergence_threshold=1000.00,
             check_on_train_epoch_end=False,
         ),
     ]

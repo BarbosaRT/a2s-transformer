@@ -92,7 +92,7 @@ class ARDataModule(LightningDataModule):
     def test_dataloader(self):
         return DataLoader(
             self.test_ds,
-            batch_size=1,
+            batch_size=self.batch_size,
             shuffle=False,
             collate_fn=ar_val_batch_preparation,
             num_workers=self.num_workers,
