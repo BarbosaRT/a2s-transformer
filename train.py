@@ -85,7 +85,8 @@ def train(
         raise NotImplementedError
 
     # Train, validate and test
-    callbacks = [RichProgressBar(),
+    callbacks = [
+        RichProgressBar(),
         ModelCheckpoint(
             dirpath=f"weights/{model_type}" if not use_voice_change_token else f"weights/{model_type}-VCT",
             filename=ds_name,

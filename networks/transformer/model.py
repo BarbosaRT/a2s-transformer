@@ -98,11 +98,12 @@ class A2STransformer(LightningModule):
         )
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=5e-4)
+        #TODO: Return this to normal (when doing final training)
+        optimizer = torch.optim.Adam(self.parameters(), lr=2e-4)
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
-            T_max=50,      # match your total number of epochs
-            eta_min=1e-6,  # floor LR at the end of the schedule (don't go all the way to 0)
+            T_max=150,      # match your total number of epochs
+            eta_min=2e-5,  # floor LR at the end of the schedule (don't go all the way to 0)
         )
         return {
             "optimizer": optimizer,
@@ -185,7 +186,6 @@ class A2STransformer(LightningModule):
             self.Y.append(y_true)
             self.YHat.append(decoded[i])
         
-        self.log("val_sym-er", sym_er, sync_dist=True, prog_bar=True)
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
