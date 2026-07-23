@@ -85,8 +85,8 @@ def compute_mv2h_metrics(y_true, y_pred):
 
     def eval_as_polyphonic():
         # Convert to MIDI
-        reference_midi_file = krn2midi("true_{os.getpid()}.krn")
-        predicted_midi_file = krn2midi("pred_{os.getpid()}.krn")
+        reference_midi_file = krn2midi(f"true_{os.getpid()}.krn")
+        predicted_midi_file = krn2midi(f"pred_{os.getpid()}.krn")
 
         # Convert to TXT
         reference_txt_file = midi2txt(reference_midi_file)
@@ -136,10 +136,10 @@ def compute_mv2h_metrics(y_true, y_pred):
         global_res_dict = MV2H(multi_pitch=0, voice=0, meter=0, harmony=0, note_value=0)
         for it_voice in range(num_voices):
             # Convert to MIDI
-            divide_voice("true_{os.getpid()}.krn", "true_voice_{os.getpid()}.krn", it_voice)
-            reference_midi_file = krn2midi("true_voice_{os.getpid()}.krn")
-            divide_voice("pred_{os.getpid()}.krn", "pred_voice_{os.getpid()}.krn", it_voice)
-            predicted_midi_file = krn2midi("pred_voice_{os.getpid()}.krn")
+            divide_voice(f"true_{os.getpid()}.krn", f"true_voice_{os.getpid()}.krn", it_voice)
+            reference_midi_file = krn2midi(f"true_voice_{os.getpid()}.krn")
+            divide_voice(f"pred_{os.getpid()}.krn", f"pred_voice_{os.getpid()}.krn", it_voice)
+            predicted_midi_file = krn2midi(f"pred_voice_{os.getpid()}.krn")
 
             # Convert to TXT
             reference_txt_file = midi2txt(reference_midi_file)
@@ -200,16 +200,16 @@ def compute_mv2h_metrics(y_true, y_pred):
 
         # GROUND TRUTH
         # Creating ground truth Kern file
-        create_kern_file("true_{os.getpid()}.krn", t, num_voices)
+        create_kern_file(f"true_{os.getpid()}.krn", t, num_voices)
 
         # PREDICTION
         # Creating predicted Kern file
-        create_kern_file("pred_{os.getpid()}.krn", h, num_voices)
+        create_kern_file(f"pred_{os.getpid()}.krn", h, num_voices)
 
         # Testing whether predicted Kern can be processed as polyphonic
         flag_polyphonic_kern = True
         try:
-            _ = converterm21.parse("pred_{os.getpid()}.krn").write("midi")
+            _ = converterm21.parse(f"pred_{os.getpid()}.krn").write("midi")
         except:
             flag_polyphonic_kern = False
 

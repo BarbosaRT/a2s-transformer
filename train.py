@@ -114,7 +114,7 @@ def train(
         LearningRateMonitor(logging_interval="step"),
     ]
     trainer = Trainer(
-        log_every_n_steps=50,
+        log_every_n_steps=100,
         logger=WandbLogger(
             project="A2S-Poly-ICASSP",
             group=f"{model_type}" if not use_voice_change_token else f"{model_type}-VCT",
