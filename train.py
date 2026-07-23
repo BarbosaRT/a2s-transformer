@@ -3,7 +3,7 @@ import os
 import fire
 import torch
 from lightning.pytorch import Trainer
-from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint
+from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, RichProgressBar, LearningRateMonitor
 from lightning.pytorch.loggers.wandb import WandbLogger
 
 from networks.crnn.model import CTCTrainedCRNN
@@ -11,7 +11,6 @@ from networks.transformer.model import A2STransformer
 from my_utils.ctc_dataset import CTCDataModule
 from my_utils.ar_dataset import ARDataModule
 from my_utils.seed import seed_everything
-
 
 torch.set_float32_matmul_precision("high")
 seed_everything(42, benchmark=False)
@@ -86,7 +85,7 @@ def train(
         raise NotImplementedError
 
     # Train, validate and test
-    callbacks = [
+    callbacks = [RichProgressBar(),
         ModelCheckpoint(
             dirpath=f"weights/{model_type}" if not use_voice_change_token else f"weights/{model_type}-VCT",
             filename=ds_name,
@@ -114,6 +113,7 @@ def train(
         LearningRateMonitor(logging_interval="step"),
     ]
     trainer = Trainer(
+        log_every_n_steps=50
         logger=WandbLogger(
             project="A2S-Poly-ICASSP",
             group=f"{model_type}" if not use_voice_change_token else f"{model_type}-VCT",
