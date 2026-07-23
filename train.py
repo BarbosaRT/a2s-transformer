@@ -111,6 +111,7 @@ def train(
             divergence_threshold=1000.00,
             check_on_train_epoch_end=False,
         ),
+        LearningRateMonitor(logging_interval="step"),
     ]
     trainer = Trainer(
         logger=WandbLogger(

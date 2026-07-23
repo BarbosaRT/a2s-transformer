@@ -98,11 +98,19 @@ class A2STransformer(LightningModule):
         )
 
     def configure_optimizers(self):
-        return torch.optim.Adam(
-            list(self.encoder.parameters()) + list(self.decoder.parameters()),
-            lr=1e-4,
-            amsgrad=False,
+        optimizer = torch.optim.Adam(self.parameters(), lr=5e-4)
+        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+            optimizer,
+            T_max=50,      # match your total number of epochs
+            eta_min=1e-6,  # floor LR at the end of the schedule (don't go all the way to 0)
         )
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",  # step once per epoch (use "step" to step per batch instead)
+            },
+        }
 
     def forward(self, x, xl, y_in):
         # Encoder
@@ -176,6 +184,8 @@ class A2STransformer(LightningModule):
             y_true = [self.ytest_i2w[t.item()] for t in y[i][1:]]  # drop SOS
             self.Y.append(y_true)
             self.YHat.append(decoded[i])
+        
+        self.log("val_sym-er", sym_er, sync_dist=True, prog_bar=True)
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
@@ -185,7 +195,7 @@ class A2STransformer(LightningModule):
     def on_validation_epoch_end(self, name="val", print_random_samples=False):
         metrics = compute_metrics(y_true=self.Y, y_pred=self.YHat)
         for k, v in metrics.items():
-            self.log(f"{name}_{k}", v, prog_bar=True, logger=True, on_epoch=True)
+            self.log(f"{name}_{k}", v, prog_bar=True, sync_dist=True, logger=True, on_epoch=True)
         # Print random samples
         if print_random_samples:
             index = random.randint(0, len(self.Y) - 1)
