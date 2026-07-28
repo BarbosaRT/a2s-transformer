@@ -32,10 +32,36 @@ def get_spectrogram_from_raw_audio(raw_audio: np.ndarray, sr: float) -> np.ndarr
     return log_stft
 
 
+def get_mel_spectrogram_from_raw_audio(raw_audio: np.ndarray, sr: float,) -> np.ndarray:
+    new_sr = 22050
+
+    y = librosa.resample(raw_audio, orig_sr=sr, target_sr=new_sr)
+
+    mel_spec = librosa.feature.melspectrogram(
+        y=y,
+        sr=new_sr,
+        n_fft=2048,
+        hop_length=512,
+        win_length=2048,
+        window="hann",
+        n_mels=128,
+        fmax=2093,
+        power=2.0,
+    )
+
+    mel_spec_db = librosa.power_to_db(mel_spec, ref=np.max)
+
+    # [-80, 0] dB -> [0, 1]
+    log_mel_spec = (mel_spec_db / 80.0) + 1.0
+
+    return log_mel_spec
+
+
 @MEMORY.cache
 def preprocess_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> torch.Tensor:
     # Get spectrogram (already normalized)
-    x = get_spectrogram_from_raw_audio(raw_audio, sr)
+    # x = get_spectrogram_from_raw_audio(raw_audio, sr)
+    x = get_mel_spectrogram_from_raw_audio(raw_audio, sr)
     # Convert to PyTorch tensor
     x = np.expand_dims(x, 0)
     x = torch.from_numpy(x)  # [1, freq_bins, time_frames]
