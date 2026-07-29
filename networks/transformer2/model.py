@@ -1,5 +1,4 @@
 import math
-import random
 
 import torch
 import torch.nn as nn
@@ -7,8 +6,8 @@ from torch.nn import CrossEntropyLoss
 from torchinfo import summary
 from lightning.pytorch import LightningModule
 
-from networks.transformer.decoder import Decoder
-from networks.transformer.encoder import Encoder, HEIGHT_REDUCTION, WIDTH_REDUCTION
+from networks.transformer2.decoder import Decoder
+from networks.transformer2.encoder import Encoder, HEIGHT_REDUCTION, WIDTH_REDUCTION
 from my_utils.metrics import compute_metrics
 from my_utils.data_preprocessing import IMG_HEIGHT, NUM_CHANNELS
 from my_utils.ar_dataset import SOS_TOKEN, EOS_TOKEN
@@ -47,6 +46,7 @@ class A2STransformer(LightningModule):
         ytest_i2w=None,
         attn_window=-1,
         teacher_forcing_prob=0.5,
+        compile=False,
     ):
         super(A2STransformer, self).__init__()
         # Save hyperparameters
@@ -74,6 +74,10 @@ class A2STransformer(LightningModule):
             attn_window=attn_window,
         )
         self.summary()
+        # Compile submodules for performance
+        if compile:
+            self.encoder = torch.compile(self.encoder, dynamic=True)
+            self.decoder = torch.compile(self.decoder, dynamic=True)
         # Loss
         self.compute_loss = CrossEntropyLoss(ignore_index=self.padding_idx)
         # Predictions
@@ -198,7 +202,7 @@ class A2STransformer(LightningModule):
             self.log(f"{name}_{k}", v, prog_bar=True, sync_dist=True, logger=True, on_epoch=True)
         # Print random samples
         if print_random_samples:
-            index = random.randint(0, len(self.Y) - 1)
+            index = torch.randint(0, len(self.Y), (1,)).item()
             print(f"Ground truth - {self.Y[index]}")
             print(f"Prediction - {self.YHat[index]}")
         # Clear predictions

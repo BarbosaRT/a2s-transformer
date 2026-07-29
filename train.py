@@ -8,6 +8,7 @@ from lightning.pytorch.loggers.wandb import WandbLogger
 
 from networks.crnn.model import CTCTrainedCRNN
 from networks.transformer.model import A2STransformer
+from networks.transformer2.model import A2STransformer as A2STransformer2
 from my_utils.ctc_dataset import CTCDataModule
 from my_utils.ar_dataset import ARDataModule
 from my_utils.seed import seed_everything
@@ -33,7 +34,7 @@ def train(
     print("TRAIN EXPERIMENT")
     print(f"\tDataset: {ds_name}")
     print(f"\tModel type: {model_type}")
-    print(f"\tAttention window: {attn_window} (Used if model type is transformer)")
+    print(f"\tAttention window: {attn_window} (Used if model type is transformer/transformer2)")
     print(f"\tUse voice change token: {use_voice_change_token}")
     print(f"\tEpochs: {epochs}")
     print(f"\tPatience: {patience}")
@@ -80,13 +81,33 @@ def train(
             teacher_forcing_prob=0.2,
         )
 
+    elif model_type == "transformer2":
+        # Data module
+        datamodule = ARDataModule(
+            ds_name=ds_name,
+            use_voice_change_token=use_voice_change_token,
+            batch_size=batch_size,
+        )
+        datamodule.setup(stage="fit")
+        w2i, i2w = datamodule.get_w2i_and_i2w()
+
+        # Model with FlashAttention + optional torch.compile
+        model = A2STransformer2(
+            max_seq_len=datamodule.get_max_seq_len(),
+            max_audio_len=datamodule.get_max_audio_len(),
+            w2i=w2i,
+            i2w=i2w,
+            attn_window=attn_window,
+            teacher_forcing_prob=0.2,
+            compile=False,
+        )
+
     else:
         print(f"Model type {model_type} not implemented")
         raise NotImplementedError
 
     # Train, validate and test
     callbacks = [
-        RichProgressBar(),
         ModelCheckpoint(
             dirpath=f"weights/{model_type}" if not use_voice_change_token else f"weights/{model_type}-VCT",
             filename=ds_name,
@@ -139,6 +160,8 @@ def train(
     
     if model_type == "crnn":
         model = CTCTrainedCRNN.load_from_checkpoint(callbacks[0].best_model_path)
+    elif model_type == "transformer2":
+        model = A2STransformer2.load_from_checkpoint(callbacks[0].best_model_path)
     else:
         model = A2STransformer.load_from_checkpoint(callbacks[0].best_model_path)
     model.freeze()

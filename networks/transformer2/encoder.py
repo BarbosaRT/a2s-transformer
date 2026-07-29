@@ -1,5 +1,4 @@
-import random
-
+import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
@@ -75,9 +74,8 @@ class MixDropout(nn.Module):
         self.dropout2D = nn.Dropout2d(dropout_2d_prob)
 
     def forward(self, x):
-        if random.random() < 0.5:
-            return self.dropout(x)
-        return self.dropout2D(x)
+        use_dropout = torch.rand(1, device=x.device) < 0.5
+        return torch.where(use_dropout, self.dropout(x), self.dropout2D(x))
 
 
 class ConvBlock(nn.Module):
@@ -120,26 +118,20 @@ class ConvBlock(nn.Module):
         self.dropout = MixDropout(dropout_prob=dropout, dropout_2d_prob=dropout / 2)
 
     def forward(self, x):
-        pos = random.randint(1, 3)
+        pos = torch.randint(1, 4, (1,), device=x.device)
 
         x = self.conv1(x)
         x = self.activation(x)
-
-        if pos == 1:
-            x = self.dropout(x)
+        x = torch.where(pos == 1, self.dropout(x), x)
 
         x = self.conv2(x)
         x = self.activation(x)
-
-        if pos == 2:
-            x = self.dropout(x)
+        x = torch.where(pos == 2, self.dropout(x), x)
 
         x = self.normLayer(x)
         x = self.conv3(x)
         x = self.activation(x)
-
-        if pos == 3:
-            x = self.dropout(x)
+        x = torch.where(pos == 3, self.dropout(x), x)
 
         return x
 
@@ -160,24 +152,19 @@ class DSCBlock(nn.Module):
         self.dropout = MixDropout(dropout_prob=dropout, dropout_2d_prob=dropout / 2)
 
     def forward(self, x):
-        pos = random.randint(1, 3)
+        pos = torch.randint(1, 4, (1,), device=x.device)
+
         x = self.conv1(x)
         x = self.activation(x)
-
-        if pos == 1:
-            x = self.dropout(x)
+        x = torch.where(pos == 1, self.dropout(x), x)
 
         x = self.conv2(x)
         x = self.activation(x)
-
-        if pos == 2:
-            x = self.dropout(x)
+        x = torch.where(pos == 2, self.dropout(x), x)
 
         x = self.norm_layer(x)
         x = self.conv3(x)
-
-        if pos == 3:
-            x = self.dropout(x)
+        x = torch.where(pos == 3, self.dropout(x), x)
 
         return x
 
