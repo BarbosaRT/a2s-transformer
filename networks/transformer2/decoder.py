@@ -1,7 +1,12 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from flash_attn import flash_attn_func
+
+try:
+    from flash_attn import flash_attn_func as _flash_attn_func
+    _HAS_FLASH_ATTN = True
+except ImportError:
+    _HAS_FLASH_ATTN = False
 
 
 class PositionalEncoding1D(nn.Module):
@@ -31,18 +36,47 @@ class WindowedCausalSelfAttention(nn.Module):
         self.dropout_p = dropout
         self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim)
         self.out_proj = nn.Linear(embed_dim, embed_dim)
+        self._flash_available = _HAS_FLASH_ATTN
+
+    def _sdpa_forward(self, q, k, v, B, L, C):
+        q = q.permute(0, 2, 1, 3)
+        k = k.permute(0, 2, 1, 3)
+        v = v.permute(0, 2, 1, 3)
+        if self.attn_window > 0:
+            i = torch.arange(L, device=q.device).unsqueeze(1)
+            j = torch.arange(L, device=q.device).unsqueeze(0)
+            causal = j <= i
+            window = j > (i - self.attn_window)
+            mask = causal & window
+            out = F.scaled_dot_product_attention(
+                q, k, v, attn_mask=mask,
+                dropout_p=self.dropout_p if self.training else 0.0,
+            )
+        else:
+            out = F.scaled_dot_product_attention(
+                q, k, v, is_causal=True,
+                dropout_p=self.dropout_p if self.training else 0.0,
+            )
+        return out.permute(0, 2, 1, 3).reshape(B, L, C)
 
     def forward(self, x):
         B, L, C = x.shape
         qkv = self.qkv_proj(x).view(B, L, 3, self.nhead, self.head_dim)
         q, k, v = qkv.unbind(2)
-        left = (self.attn_window - 1) if self.attn_window > 0 else -1
-        out = flash_attn_func(
-            q, k, v,
-            dropout_p=self.dropout_p if self.training else 0.0,
-            causal=True,
-            window_size=(left, 0),
-        )
+        if self._flash_available and x.is_cuda:
+            try:
+                left = (self.attn_window - 1) if self.attn_window > 0 else -1
+                out = _flash_attn_func(
+                    q, k, v,
+                    dropout_p=self.dropout_p if self.training else 0.0,
+                    causal=True,
+                    window_size=(left, 0),
+                )
+            except RuntimeError:
+                self._flash_available = False
+                out = self._sdpa_forward(q, k, v, B, L, C)
+        else:
+            out = self._sdpa_forward(q, k, v, B, L, C)
         return self.out_proj(out.reshape(B, L, C))
 
 

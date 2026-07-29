@@ -86,7 +86,10 @@ class A2STransformer(LightningModule):
 
     def summary(self):
         print("Encoder")
-        summary(self.encoder, input_size=[1, NUM_CHANNELS, IMG_HEIGHT, self.max_audio_len])
+        try:
+            summary(self.encoder, input_size=[1, NUM_CHANNELS, IMG_HEIGHT, self.max_audio_len])
+        except Exception:
+            pass
         print("Decoder")
         tgt_size = [1, self.max_seq_len]
         memory_size = [
@@ -95,11 +98,14 @@ class A2STransformer(LightningModule):
             256,
         ]
         memory_len_size = [1]
-        summary(
-            self.decoder,
-            input_size=[tgt_size, memory_size, memory_len_size],
-            dtypes=[torch.int64, torch.float32, torch.int64],
-        )
+        try:
+            summary(
+                self.decoder,
+                input_size=[tgt_size, memory_size, memory_len_size],
+                dtypes=[torch.int64, torch.float32, torch.int64],
+            )
+        except Exception:
+            pass
 
     def configure_optimizers(self):
         #TODO: Return this to normal (when doing final training)
