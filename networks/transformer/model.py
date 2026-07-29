@@ -105,6 +105,18 @@ class A2STransformer(LightningModule):
             T_max=150,      # match your total number of epochs
             eta_min=2e-5,  # floor LR at the end of the schedule (don't go all the way to 0)
         )
+        # scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+        #     optimizer,
+        #     mode="min",
+        #     factor=0.5,
+        #     patience=5,
+        #     verbose=True,
+        #     threshold=0.01,
+        #     threshold_mode="rel",
+        #     cooldown=0,
+        #     min_lr=1e-6,
+        #     eps=1e-08,
+        # )
         return {
             "optimizer": optimizer,
             "lr_scheduler": {

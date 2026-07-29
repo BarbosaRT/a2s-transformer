@@ -60,8 +60,8 @@ def get_mel_spectrogram_from_raw_audio(raw_audio: np.ndarray, sr: float,) -> np.
 @MEMORY.cache
 def preprocess_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> torch.Tensor:
     # Get spectrogram (already normalized)
-    # x = get_spectrogram_from_raw_audio(raw_audio, sr)
-    x = get_mel_spectrogram_from_raw_audio(raw_audio, sr)
+    x = get_spectrogram_from_raw_audio(raw_audio, sr)
+    # x = get_mel_spectrogram_from_raw_audio(raw_audio, sr)
     # Convert to PyTorch tensor
     x = np.expand_dims(x, 0)
     x = torch.from_numpy(x)  # [1, freq_bins, time_frames]
