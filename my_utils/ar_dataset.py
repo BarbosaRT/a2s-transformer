@@ -17,7 +17,7 @@ ENC_FRAMES_PER_SAMPLE = 960  # hop_length=240 * subsampling=4
 
 def ar_val_batch_preparation(batch):
     x, y = zip(*batch)
-    xl = [xi.shape[1] // ENC_FRAMES_PER_SAMPLE for xi in x]
+    xl = [xi.shape[-1] // ENC_FRAMES_PER_SAMPLE for xi in x]
     x = pad_batch_audios(x, dtype=torch.float32)
     xl = torch.tensor(xl, dtype=torch.int64)
     return x, xl, list(y)

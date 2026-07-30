@@ -73,8 +73,8 @@ def preprocess_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> t
 
 
 def pad_batch_audios(x, dtype=torch.float32):
-    max_width = max(x, key=lambda sample: sample.shape[2]).shape[2]
-    x = torch.stack([F.pad(i, pad=(0, max_width - i.shape[2])) for i in x], dim=0)
+    max_width = max(x, key=lambda sample: sample.shape[-1]).shape[-1]
+    x = torch.stack([F.pad(i, pad=(0, max_width - i.shape[-1])) for i in x], dim=0)
     x = x.type(dtype=dtype)
     return x
 
