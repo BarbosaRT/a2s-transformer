@@ -156,7 +156,10 @@ class MusicFM25Hz(nn.Module):
         # load model
         if model_path:
             model_path = ensure_file_downloaded(model_path)
-            S = torch.load(model_path, map_location="cpu")["state_dict"]
+            try:
+                S = torch.load(model_path, map_location="cpu", weights_only=False)["state_dict"]
+            except TypeError:
+                S = torch.load(model_path, map_location="cpu")["state_dict"]
             SS = {k[6:]: v for k, v in S.items()}
             self.load_state_dict(SS, strict=True)
 
