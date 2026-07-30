@@ -88,7 +88,7 @@ class A2STransformer(LightningModule):
 
     def forward(self, x, xl, y_in):
         x = self.encoder(x)
-        xl_new = torch.ceil(2 * xl.float() / 13).long()
+        xl_new = torch.ceil(xl.float() / 4).long()
         y_out_hat = self.decoder(tgt=y_in, memory=x, memory_len=xl_new)
         return y_out_hat
 
@@ -116,7 +116,7 @@ class A2STransformer(LightningModule):
         device = x.device
 
         x = self.encoder(x)
-        xl_new = torch.ceil(2 * xl.float() / 13).long()
+        xl_new = torch.ceil(xl.float() / 4).long()
 
         sos = self.w2i[SOS_TOKEN]
         eos = self.w2i[EOS_TOKEN]
@@ -151,11 +151,16 @@ class A2STransformer(LightningModule):
         return self.validation_step(batch, batch_idx)
 
     @torch.no_grad()
+    def on_validation_epoch_start(self):
+        self.Y.clear()
+        self.YHat.clear()
+
+    @torch.no_grad()
     def on_validation_epoch_end(self, name="val", print_random_samples=False):
         metrics = compute_metrics(y_true=self.Y, y_pred=self.YHat)
         for k, v in metrics.items():
             self.log(f"{name}_{k}", v, prog_bar=True, sync_dist=True, logger=True, on_epoch=True)
-        if print_random_samples:
+        if print_random_samples and len(self.Y) > 0:
             index = torch.randint(0, len(self.Y), (1,)).item()
             print(f"Ground truth - {self.Y[index]}")
             print(f"Prediction - {self.YHat[index]}")

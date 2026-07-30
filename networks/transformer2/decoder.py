@@ -90,4 +90,4 @@ class Decoder(nn.Module):
             return None
         B, S = memory.shape[:2]
         positions = torch.arange(S, device=memory.device).unsqueeze(0).expand(B, S)
-        return (positions >= memory_len.unsqueeze(1)).to(torch.float32)
+        return positions >= memory_len.unsqueeze(1)

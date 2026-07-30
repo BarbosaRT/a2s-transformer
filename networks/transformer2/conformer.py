@@ -20,7 +20,7 @@ class Wav2Vec2ConformerSelfAttention(nn.Module):
 
         self.pos_bias_embed = nn.Embedding(max_distance * 2, self.num_heads)
 
-    def forward(self, hidden_states, attention_mask=None, output_attentions=False):
+    def forward(self, hidden_states, attention_mask=None):
         B, L, C = hidden_states.shape
 
         q = self.q_proj(hidden_states).view(B, L, self.num_heads, self.head_dim)
@@ -33,25 +33,20 @@ class Wav2Vec2ConformerSelfAttention(nn.Module):
 
         pos_bias = self._compute_pos_bias(L, hidden_states.device)
 
-        attn_mask = None
-        if attention_mask is not None:
-            attn_mask = attention_mask.unsqueeze(1).unsqueeze(2).to(torch.bool)
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
+        pos_bias_4d = pos_bias.permute(2, 0, 1).unsqueeze(0)
+        scores = scores + pos_bias_4d
 
-        with torch.backends.cuda.sdp_kernel(enable_flash=True):
-            attn_output = F.scaled_dot_product_attention(
-                q, k, v,
-                attn_mask=attn_mask,
-                dropout_p=self.dropout if self.training else 0.0,
-            )
+        if attention_mask is not None:
+            mask = attention_mask.unsqueeze(1).unsqueeze(2)
+            scores = scores.masked_fill(mask, float('-inf'))
+
+        probs = F.softmax(scores, dim=-1, dtype=torch.float32)
+        probs = F.dropout(probs, p=self.dropout, training=self.training)
+        attn_output = torch.matmul(probs, v)
 
         attn_output = attn_output.transpose(1, 2).reshape(B, L, C)
         attn_output = self.out_proj(attn_output)
-
-        if output_attentions:
-            attn_weights = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(self.head_dim)
-            pos_bias_4d = pos_bias.permute(2, 0, 1).unsqueeze(0)
-            attn_weights = attn_weights + pos_bias_4d
-            return (attn_output, attn_weights)
 
         return attn_output
 
