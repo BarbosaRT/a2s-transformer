@@ -9,6 +9,7 @@ from lightning.pytorch.loggers.wandb import WandbLogger
 from networks.crnn.model import CTCTrainedCRNN
 from networks.transformer.model import A2STransformer
 from networks.transformer2.model import A2STransformer as A2STransformer2
+from networks.transformer2.model import ENC_FRAMES_PER_SAMPLE
 from my_utils.ctc_dataset import CTCDataModule
 from my_utils.ar_dataset import ARDataModule
 from my_utils.seed import seed_everything
@@ -27,7 +28,9 @@ def train(
     batch_size: int = 16,
     check_val_every_n_epoch: int = 5,
     is_flash: bool = False,
-    pretrained_path: str = None,
+    musicfm_path: str = None,
+    musicfm_stat_path: str = None,
+    musicfm_layer_ix: int = 12,
     freeze_encoder: bool = False,
     strategy: str = "ddp_find_unused_parameters_true",
 ):
@@ -41,7 +44,9 @@ def train(
     print(f"\tAttention window: {attn_window} (Used if model type is transformer/transformer2)")
     print(f"\tUse voice change token: {use_voice_change_token}")
     print(f"\tIs flash: {is_flash}")
-    print(f"\tPretrained path: {pretrained_path}")
+    print(f"\tMusicFM path: {musicfm_path}")
+    print(f"\tMusicFM stat path: {musicfm_stat_path}")
+    print(f"\tMusicFM layer ix: {musicfm_layer_ix}")
     print(f"\tFreeze encoder: {freeze_encoder}")
     print(f"\tEpochs: {epochs}")
     print(f"\tPatience: {patience}")
@@ -107,14 +112,16 @@ def train(
             attn_window=attn_window,
             teacher_forcing_prob=0.2,
             is_flash=is_flash,
-            pretrained_path=pretrained_path,
+            musicfm_path=musicfm_path,
+            musicfm_stat_path=musicfm_stat_path,
+            musicfm_layer_ix=musicfm_layer_ix,
             freeze_encoder=freeze_encoder,
         )
 
         # Pre-compute encoder outputs once if frozen
         if freeze_encoder:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            model = model.to(device)
+            model.encoder = model.encoder.to(device)
             model.encoder.eval()
             train_loader = datamodule.train_dataloader()
             cached_data = []
@@ -123,9 +130,11 @@ def train(
                     x, xl, y_in, y_out = batch
                     x = x.to(device)
                     xl = xl.to(device)
-                    enc_out = model.encoder(x)
-                    xl_new = torch.ceil(xl.float() / 4).long()
-                    cached_data.append((enc_out.cpu(), xl_new.cpu(), y_in, y_out))
+                    _, hidden_states = model.encoder.get_predictions(x)
+                    enc_out = model.encoder_proj(hidden_states[musicfm_layer_ix]).cpu()
+                    xl_new = (xl.float() / ENC_FRAMES_PER_SAMPLE).ceil_().long().cpu()
+                    cached_data.append((enc_out, xl_new, y_in, y_out))
+            model.encoder = model.encoder.cpu()
             print(f"Cached {len(cached_data)} training batches of encoder outputs")
 
             class CachedDataset(torch.utils.data.Dataset):

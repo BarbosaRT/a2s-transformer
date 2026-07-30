@@ -6,11 +6,17 @@ from torch.nn import CrossEntropyLoss
 from torchinfo import summary
 from lightning.pytorch import LightningModule
 
+from musicfm.model.musicfm_25hz import MusicFM25Hz
 from networks.transformer2.decoder import Decoder
-from networks.transformer2.encoder import Encoder
 from my_utils.metrics import compute_metrics
-from my_utils.data_preprocessing import NUM_CHANNELS
 from my_utils.ar_dataset import SOS_TOKEN, EOS_TOKEN
+
+
+SAMPLE_RATE = 24000
+HOP_LENGTH = 240
+SUBSAMPLING = 4
+ENC_FRAME_RATE = SAMPLE_RATE // (HOP_LENGTH * SUBSAMPLING)  # 25 Hz
+ENC_FRAMES_PER_SAMPLE = HOP_LENGTH * SUBSAMPLING  # 960
 
 
 class A2STransformer(LightningModule):
@@ -24,7 +30,9 @@ class A2STransformer(LightningModule):
         attn_window=-1,
         teacher_forcing_prob=0.5,
         is_flash=False,
-        pretrained_path=None,
+        musicfm_path=None,
+        musicfm_stat_path=None,
+        musicfm_layer_ix=12,
         freeze_encoder=False,
     ):
         super(A2STransformer, self).__init__()
@@ -37,8 +45,15 @@ class A2STransformer(LightningModule):
         self.max_seq_len = max_seq_len
         self.teacher_forcing_prob = teacher_forcing_prob
         self.freeze_encoder = freeze_encoder
+        self.musicfm_layer_ix = musicfm_layer_ix
 
-        self.encoder = Encoder(in_channels=NUM_CHANNELS, is_flash=is_flash)
+        self.encoder = MusicFM25Hz(
+            is_flash=is_flash,
+            stat_path=musicfm_stat_path,
+            model_path=musicfm_path,
+        )
+        self.encoder_proj = nn.Linear(1024, 256)
+
         self.decoder = Decoder(
             output_size=len(self.w2i),
             max_seq_len=self.max_seq_len,
@@ -46,9 +61,6 @@ class A2STransformer(LightningModule):
             padding_idx=self.padding_idx,
             attn_window=attn_window,
         )
-
-        if pretrained_path is not None:
-            self.encoder.load_pretrained(pretrained_path)
 
         if freeze_encoder:
             self.encoder.requires_grad_(False)
@@ -58,14 +70,10 @@ class A2STransformer(LightningModule):
         self.YHat = []
 
     def summary(self):
-        print("Encoder")
-        try:
-            summary(self.encoder, input_size=[1, NUM_CHANNELS, 128, self.max_audio_len])
-        except Exception:
-            pass
+        print("Encoder (MusicFM25Hz)")
         print("Decoder")
         tgt_size = [1, self.max_seq_len]
-        memory_size = [1, self.max_audio_len // 4, 256]
+        memory_size = [1, self.max_audio_len // ENC_FRAMES_PER_SAMPLE, 256]
         memory_len_size = [1]
         try:
             summary(
@@ -97,8 +105,10 @@ class A2STransformer(LightningModule):
     def forward(self, x, xl, y_in):
         if self.freeze_encoder:
             return self.decoder(tgt=y_in, memory=x, memory_len=xl)
-        x = self.encoder(x)
-        xl_new = torch.ceil(xl.float() / 4).long()
+        _, hidden_states = self.encoder.get_predictions(x)
+        emb = hidden_states[self.musicfm_layer_ix]
+        x = self.encoder_proj(emb)
+        xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
         y_out_hat = self.decoder(tgt=y_in, memory=x, memory_len=xl_new)
         return y_out_hat
 
@@ -131,8 +141,9 @@ class A2STransformer(LightningModule):
         B = x.size(0)
         device = x.device
 
-        x = self.encoder(x)
-        xl_new = torch.ceil(xl.float() / 4).long()
+        _, hidden_states = self.encoder.get_predictions(x)
+        x = self.encoder_proj(hidden_states[self.musicfm_layer_ix])
+        xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
 
         sos = self.w2i[SOS_TOKEN]
         eos = self.w2i[EOS_TOKEN]

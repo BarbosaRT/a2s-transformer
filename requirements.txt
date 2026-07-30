@@ -9,3 +9,5 @@ datasets
 wandb
 rich
 transformers
+torchaudio
+einops

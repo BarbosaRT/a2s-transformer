@@ -1,24 +1,23 @@
 import math
 import os
+import librosa
 import torch
 from torch.utils.data import DataLoader
 from lightning.pytorch import LightningDataModule
 
 from my_utils.ctc_dataset import CTCDataset, load_dataset, SPLITS
-from my_utils.data_preprocessing import preprocess_audio, ar_batch_preparation, pad_batch_audios, IMG_HEIGHT
-from networks.transformer.encoder import HEIGHT_REDUCTION, WIDTH_REDUCTION
-import math
-    
-SOS_TOKEN = "<SOS>"  # Start-of-sequence token
-EOS_TOKEN = "<EOS>"  # End-of-sequence token
+from my_utils.data_preprocessing import ar_batch_preparation, pad_batch_audios
+
+SOS_TOKEN = "<SOS>"
+EOS_TOKEN = "<EOS>"
+
+MUSICFM_SR = 24000
+ENC_FRAMES_PER_SAMPLE = 960  # hop_length=240 * subsampling=4
 
 
 def ar_val_batch_preparation(batch):
     x, y = zip(*batch)
-    xl = [
-        math.ceil(IMG_HEIGHT / HEIGHT_REDUCTION) * math.ceil(xi.shape[2] / WIDTH_REDUCTION)
-        for xi in x
-    ]
+    xl = [xi.shape[1] // ENC_FRAMES_PER_SAMPLE for xi in x]
     x = pad_batch_audios(x, dtype=torch.float32)
     xl = torch.tensor(xl, dtype=torch.int64)
     return x, xl, list(y)
@@ -38,8 +37,6 @@ class ARDataModule(LightningDataModule):
         self.batch_size = batch_size
         self.num_workers = num_workers if num_workers is not None else min(4, os.cpu_count() or 4)
 
-        # Datasets
-        # To prevent executing setup() twice
         self.train_ds = None
         self.val_ds = None
         self.test_ds = None
@@ -76,7 +73,7 @@ class ARDataModule(LightningDataModule):
             collate_fn=ar_batch_preparation,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
-        )  # prefetch_factor=2
+        )
 
     def val_dataloader(self):
         return DataLoader(
@@ -87,7 +84,7 @@ class ARDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
-        )  # prefetch_factor=2
+        )
 
     def test_dataloader(self):
         return DataLoader(
@@ -98,7 +95,7 @@ class ARDataModule(LightningDataModule):
             num_workers=self.num_workers,
             pin_memory=True,
             persistent_workers=self.num_workers > 0,
-        )  # prefetch_factor=2
+        )
 
     def predict_dataloader(self):
         print("Using test_dataloader for predictions.")
@@ -140,9 +137,9 @@ class ARDataset(CTCDataset):
         self.max_seq_len += 1  # Add 1 for EOS_TOKEN
 
     def __getitem__(self, idx):
-        x = preprocess_audio(
-            raw_audio=self.ds[idx]["audio"]["array"], sr=self.ds[idx]["audio"]["sampling_rate"], dtype=torch.float32
-        )
+        audio = self.ds[idx]["audio"]
+        raw = librosa.resample(audio["array"], orig_sr=audio["sampling_rate"], target_sr=MUSICFM_SR)
+        x = torch.from_numpy(raw).unsqueeze(0).float()
         y = self.preprocess_transcript(text=self.ds[idx]["transcript"])
         if self.partition_type == "train":
             return x, self.get_number_of_frames(x), y
@@ -176,6 +173,4 @@ class ARDataset(CTCDataset):
         return w2i, i2w
 
     def get_number_of_frames(self, audio):
-        # audio is the output of preprocess_audio
-        # audio.shape = [1, freq_bins, time_frames]
-        return math.ceil(audio.shape[1] / HEIGHT_REDUCTION) * math.ceil(audio.shape[2] / WIDTH_REDUCTION)
+        return audio.shape[1] // ENC_FRAMES_PER_SAMPLE
