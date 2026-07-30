@@ -2,200 +2,107 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-HEIGHT_REDUCTION = 16
-WIDTH_REDUCTION = 8
+from networks.transformer2.conformer import Wav2Vec2ConformerEncoder as FlashConformerEncoder
+from transformers.models.wav2vec2_conformer.modeling_wav2vec2_conformer import (
+    Wav2Vec2ConformerEncoder as HFConformerEncoder,
+)
+from transformers.models.wav2vec2_conformer.configuration_wav2vec2_conformer import (
+    Wav2Vec2ConformerConfig,
+)
+
+WIDTH_REDUCTION = 4
 
 
-class DepthSepConv2D(nn.Module):
-    def __init__(
-        self,
-        in_channels,
-        out_channels,
-        kernel_size,
-        activation=None,
-        padding=True,
-        stride=(1, 1),
-        dilation=(1, 1),
-    ):
-        super(DepthSepConv2D, self).__init__()
-        self.padding = None
+class Res2dModule(nn.Module):
+    def __init__(self, in_channels, out_channels, stride=(2, 2), kernel=3):
+        super().__init__()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, kernel_size=kernel, stride=stride, padding=kernel // 2)
+        self.bn1 = nn.BatchNorm2d(out_channels)
+        self.conv2 = nn.Conv2d(out_channels, out_channels, kernel_size=kernel, stride=1, padding=kernel // 2)
+        self.bn2 = nn.BatchNorm2d(out_channels)
+        self.relu = nn.ReLU(inplace=True)
 
-        if padding:
-            if padding is True:
-                padding = [int((k - 1) / 2) for k in kernel_size]
-                if kernel_size[0] % 2 == 0 or kernel_size[1] % 2 == 0:
-                    padding_h = kernel_size[1] - 1
-                    padding_w = kernel_size[0] - 1
-                    self.padding = [
-                        padding_h // 2,
-                        padding_h - padding_h // 2,
-                        padding_w // 2,
-                        padding_w - padding_w // 2,
-                    ]
-                    padding = (0, 0)
+        if stride != (1, 1) or in_channels != out_channels:
+            self.shortcut = nn.Sequential(
+                nn.Conv2d(in_channels, out_channels, kernel_size=1, stride=stride),
+                nn.BatchNorm2d(out_channels),
+            )
         else:
-            padding = (0, 0)
-
-        self.depth_conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=in_channels,
-            kernel_size=kernel_size,
-            dilation=dilation,
-            stride=stride,
-            padding=padding,
-            groups=in_channels,
-        )
-        self.point_conv = nn.Conv2d(
-            in_channels=in_channels,
-            out_channels=out_channels,
-            dilation=dilation,
-            kernel_size=(1, 1),
-        )
-        self.activation = activation
-
-    def forward(self, inputs):
-        x = self.depth_conv(inputs)
-
-        if self.padding:
-            x = F.pad(x, self.padding)
-
-        if self.activation:
-            x = self.activation(x)
-
-        x = self.point_conv(x)
-
-        return x
-
-
-class MixDropout(nn.Module):
-    def __init__(self, dropout_prob=0.4, dropout_2d_prob=0.2):
-        super(MixDropout, self).__init__()
-        self.dropout = nn.Dropout(dropout_prob)
-        self.dropout2D = nn.Dropout2d(dropout_2d_prob)
+            self.shortcut = nn.Identity()
 
     def forward(self, x):
-        use_dropout = torch.rand(1, device=x.device) < 0.5
-        return torch.where(use_dropout, self.dropout(x), self.dropout2D(x))
-
-
-class ConvBlock(nn.Module):
-    def __init__(
-        self,
-        in_c,
-        out_c,
-        stride=(1, 1),
-        kernel=3,
-        activation=nn.ReLU,
-        dropout=0.5,
-    ):
-        super(ConvBlock, self).__init__()
-        self.activation = activation()
-        self.conv1 = nn.Conv2d(
-            in_channels=in_c,
-            out_channels=out_c,
-            kernel_size=kernel,
-            padding=kernel // 2,
-        )
-        self.conv2 = nn.Conv2d(
-            in_channels=out_c,
-            out_channels=out_c,
-            kernel_size=kernel,
-            padding=kernel // 2,
-        )
-        self.conv3 = nn.Conv2d(
-            in_channels=out_c,
-            out_channels=out_c,
-            kernel_size=(3, 3),
-            padding=(1, 1),
-            stride=stride,
-        )
-        self.normLayer = nn.InstanceNorm2d(
-            num_features=out_c,
-            eps=0.001,
-            momentum=0.99,
-            track_running_stats=False,
-        )
-        self.dropout = MixDropout(dropout_prob=dropout, dropout_2d_prob=dropout / 2)
-
-    def forward(self, x):
-        pos = torch.randint(1, 4, (1,), device=x.device)
-
+        identity = self.shortcut(x)
         x = self.conv1(x)
-        x = self.activation(x)
-        x = torch.where(pos == 1, self.dropout(x), x)
-
+        x = self.bn1(x)
+        x = self.relu(x)
         x = self.conv2(x)
-        x = self.activation(x)
-        x = torch.where(pos == 2, self.dropout(x), x)
-
-        x = self.normLayer(x)
-        x = self.conv3(x)
-        x = self.activation(x)
-        x = torch.where(pos == 3, self.dropout(x), x)
-
-        return x
+        x = self.bn2(x)
+        x = self.relu(x)
+        return x + identity
 
 
-class DSCBlock(nn.Module):
-    def __init__(self, in_c, out_c, stride=(2, 1), activation=nn.ReLU, dropout=0.5):
-        super(DSCBlock, self).__init__()
-        self.activation = activation()
-        self.conv1 = DepthSepConv2D(in_c, out_c, kernel_size=(3, 3))
-        self.conv2 = DepthSepConv2D(out_c, out_c, kernel_size=(3, 3))
-        self.conv3 = DepthSepConv2D(out_c, out_c, kernel_size=(3, 3), padding=(1, 1), stride=stride)
-        self.norm_layer = nn.InstanceNorm2d(
-            out_c,
-            eps=0.001,
-            momentum=0.99,
-            track_running_stats=False,
-        )
-        self.dropout = MixDropout(dropout_prob=dropout, dropout_2d_prob=dropout / 2)
+class Conv2dSubsampling(nn.Module):
+    def __init__(self, in_channels=1, out_channels=512):
+        super().__init__()
+        self.module1 = Res2dModule(in_channels, out_channels, stride=(2, 2))
+        self.module2 = Res2dModule(out_channels, out_channels, stride=(2, 2))
+        self.linear = None
 
     def forward(self, x):
-        pos = torch.randint(1, 4, (1,), device=x.device)
+        B, C, H, W = x.shape
+        x = self.module1(x)
+        x = self.module2(x)
+        B, C, H, W = x.shape
+        x = x.permute(0, 3, 1, 2).contiguous()
+        x = x.reshape(B, W, C * H)
 
-        x = self.conv1(x)
-        x = self.activation(x)
-        x = torch.where(pos == 1, self.dropout(x), x)
+        if self.linear is None:
+            self.linear = nn.Linear(C * H, 1024, device=x.device, dtype=x.dtype)
 
-        x = self.conv2(x)
-        x = self.activation(x)
-        x = torch.where(pos == 2, self.dropout(x), x)
-
-        x = self.norm_layer(x)
-        x = self.conv3(x)
-        x = torch.where(pos == 3, self.dropout(x), x)
-
+        x = self.linear(x)
         return x
 
 
 class Encoder(nn.Module):
-    def __init__(self, in_channels, dropout=0.5):
-        super(Encoder, self).__init__()
-        self.conv_blocks = nn.ModuleList(
-            [
-                ConvBlock(in_c=in_channels, out_c=16, stride=(1, 1), dropout=dropout),
-                ConvBlock(in_c=16, out_c=32, stride=(2, 2), dropout=dropout),
-                ConvBlock(in_c=32, out_c=64, stride=(2, 2), dropout=dropout),
-                ConvBlock(in_c=64, out_c=128, stride=(2, 2), dropout=dropout),
-                ConvBlock(in_c=128, out_c=128, stride=(2, 1), dropout=dropout),
-            ]
+    def __init__(self, in_channels=1, is_flash=False):
+        super().__init__()
+        self.is_flash = is_flash
+        self.conv = Conv2dSubsampling(in_channels=in_channels, out_channels=512)
+        self.proj = nn.Linear(1024, 256)
+
+        conformer_config = Wav2Vec2ConformerConfig(
+            hidden_size=1024,
+            num_attention_heads=16,
+            num_hidden_layers=12,
+            intermediate_size=4096,
+            conv_depthwise_kernel_size=31,
         )
-        self.dscblocks = nn.ModuleList(
-            [
-                DSCBlock(in_c=128, out_c=128, stride=(1, 1), dropout=dropout),
-                DSCBlock(in_c=128, out_c=128, stride=(1, 1), dropout=dropout),
-                DSCBlock(in_c=128, out_c=128, stride=(1, 1), dropout=dropout),
-                DSCBlock(in_c=128, out_c=256, stride=(1, 1), dropout=dropout),
-            ]
-        )
+
+        if is_flash:
+            self.conformer = FlashConformerEncoder(
+                hidden_size=1024,
+                num_heads=16,
+                num_layers=12,
+                intermediate_size=4096,
+                conv_kernel=31,
+            )
+        else:
+            self.conformer = HFConformerEncoder(conformer_config)
 
     def forward(self, x):
-        for layer in self.conv_blocks:
-            x = layer(x)
-
-        for layer in self.dscblocks:
-            xt = layer(x)
-            x = x + xt if x.size() == xt.size() else xt
-
+        x = self.conv(x)
+        x = self.conformer(x)[0] if not self.is_flash else self.conformer(x)
+        x = self.proj(x)
         return x
+
+    def load_pretrained(self, path):
+        state = torch.load(path, map_location="cpu")
+        if "state_dict" in state:
+            state = state["state_dict"]
+        new_state = {}
+        for k, v in state.items():
+            k = k[6:] if k.startswith("model.") else k
+            if k.startswith("conv.") or k.startswith("conformer."):
+                new_state[k] = v
+        msg = self.load_state_dict(new_state, strict=False)
+        print(f"Loaded MSD pretrained weights: {msg}")

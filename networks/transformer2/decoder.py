@@ -1,12 +1,5 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-
-try:
-    from flash_attn import flash_attn_func as _flash_attn_func
-    _HAS_FLASH_ATTN = True
-except ImportError:
-    _HAS_FLASH_ATTN = False
 
 
 class PositionalEncoding1D(nn.Module):
@@ -25,120 +18,6 @@ class PositionalEncoding1D(nn.Module):
     def forward(self, x):
         x = x + self.pe[:, : x.size(1), :]
         return self.dropout(x)
-
-
-class WindowedCausalSelfAttention(nn.Module):
-    def __init__(self, embed_dim, nhead, attn_window=-1, dropout=0.0):
-        super().__init__()
-        self.nhead = nhead
-        self.head_dim = embed_dim // nhead
-        self.attn_window = attn_window
-        self.dropout_p = dropout
-        self.qkv_proj = nn.Linear(embed_dim, 3 * embed_dim)
-        self.out_proj = nn.Linear(embed_dim, embed_dim)
-        self._flash_available = _HAS_FLASH_ATTN
-
-    def _sdpa_forward(self, q, k, v, B, L, C):
-        q = q.permute(0, 2, 1, 3)
-        k = k.permute(0, 2, 1, 3)
-        v = v.permute(0, 2, 1, 3)
-        if self.attn_window > 0:
-            i = torch.arange(L, device=q.device).unsqueeze(1)
-            j = torch.arange(L, device=q.device).unsqueeze(0)
-            causal = j <= i
-            window = j > (i - self.attn_window)
-            mask = causal & window
-            out = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=mask,
-                dropout_p=self.dropout_p if self.training else 0.0,
-            )
-        else:
-            out = F.scaled_dot_product_attention(
-                q, k, v, is_causal=True,
-                dropout_p=self.dropout_p if self.training else 0.0,
-            )
-        return out.permute(0, 2, 1, 3).reshape(B, L, C)
-
-    def forward(self, x):
-        B, L, C = x.shape
-        qkv = self.qkv_proj(x).view(B, L, 3, self.nhead, self.head_dim)
-        q, k, v = qkv.unbind(2)
-        if self._flash_available and x.is_cuda:
-            try:
-                left = (self.attn_window - 1) if self.attn_window > 0 else -1
-                out = _flash_attn_func(
-                    q, k, v,
-                    dropout_p=self.dropout_p if self.training else 0.0,
-                    causal=True,
-                    window_size=(left, 0),
-                )
-            except RuntimeError:
-                self._flash_available = False
-                out = self._sdpa_forward(q, k, v, B, L, C)
-        else:
-            out = self._sdpa_forward(q, k, v, B, L, C)
-        return self.out_proj(out.reshape(B, L, C))
-
-
-class FlashDecoderLayer(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward, attn_window=-1, dropout=0.1):
-        super().__init__()
-        self.self_attn = WindowedCausalSelfAttention(d_model, nhead, attn_window, dropout)
-        self.cross_attn_q = nn.Linear(d_model, d_model)
-        self.cross_attn_k = nn.Linear(d_model, d_model)
-        self.cross_attn_v = nn.Linear(d_model, d_model)
-        self.cross_attn_out = nn.Linear(d_model, d_model)
-        self.linear1 = nn.Linear(d_model, dim_feedforward)
-        self.linear2 = nn.Linear(dim_feedforward, d_model)
-        self.norm1 = nn.LayerNorm(d_model)
-        self.norm2 = nn.LayerNorm(d_model)
-        self.norm3 = nn.LayerNorm(d_model)
-        self.dropout = nn.Dropout(dropout)
-        self.dropout1 = nn.Dropout(dropout)
-        self.dropout2 = nn.Dropout(dropout)
-        self.dropout3 = nn.Dropout(dropout)
-        self.activation = nn.ReLU()
-        self.nhead = nhead
-        self.head_dim = d_model // nhead
-
-    def _sdpa_cross_attention(self, tgt, memory, memory_key_padding_mask):
-        B, T, C = tgt.shape
-        _, S, _ = memory.shape
-        q = self.cross_attn_q(tgt).view(B, T, self.nhead, self.head_dim).transpose(1, 2)
-        k = self.cross_attn_k(memory).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        v = self.cross_attn_v(memory).view(B, S, self.nhead, self.head_dim).transpose(1, 2)
-        attn_mask = None
-        if memory_key_padding_mask is not None:
-            attn_mask = (memory_key_padding_mask < 0.5).unsqueeze(1).unsqueeze(2)
-        out = F.scaled_dot_product_attention(q, k, v, attn_mask=attn_mask, dropout_p=0.0)
-        out = out.transpose(1, 2).contiguous().view(B, T, C)
-        return self.cross_attn_out(out)
-
-    def forward(self, tgt, memory, memory_key_padding_mask=None):
-        tgt2 = self.norm1(tgt)
-        tgt2 = self.self_attn(tgt2)
-        tgt = tgt + self.dropout1(tgt2)
-        tgt2 = self.norm2(tgt)
-        tgt2 = self._sdpa_cross_attention(tgt2, memory, memory_key_padding_mask)
-        tgt = tgt + self.dropout2(tgt2)
-        tgt2 = self.norm3(tgt)
-        tgt2 = self.linear2(self.dropout(self.activation(self.linear1(tgt2))))
-        tgt = tgt + self.dropout3(tgt2)
-        return tgt
-
-
-class FlashDecoder(nn.Module):
-    def __init__(self, d_model, nhead, dim_feedforward, dropout, num_layers, attn_window):
-        super().__init__()
-        self.layers = nn.ModuleList([
-            FlashDecoderLayer(d_model, nhead, dim_feedforward, attn_window, dropout)
-            for _ in range(num_layers)
-        ])
-
-    def forward(self, tgt, memory, memory_key_padding_mask=None):
-        for layer in self.layers:
-            tgt = layer(tgt, memory, memory_key_padding_mask)
-        return tgt
 
 
 class Decoder(nn.Module):
@@ -169,13 +48,15 @@ class Decoder(nn.Module):
         )
 
         self.attn_window = attn_window
-        self.flash_decoder = FlashDecoder(
-            d_model=embedding_dim,
-            nhead=nhead,
-            dim_feedforward=ff_dim,
-            dropout=dropout_p,
+        self.transformer_decoder = nn.TransformerDecoder(
+            decoder_layer=nn.TransformerDecoderLayer(
+                d_model=embedding_dim,
+                nhead=nhead,
+                dim_feedforward=ff_dim,
+                dropout=dropout_p,
+                batch_first=True,
+            ),
             num_layers=num_transformer_layers,
-            attn_window=attn_window,
         )
 
         self.out_layer = nn.Conv1d(
@@ -189,9 +70,13 @@ class Decoder(nn.Module):
 
         memory_key_padding_mask = self.get_memory_key_padding_mask(memory, memory_len)
 
-        tgt_pred = self.flash_decoder(
+        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.size(1), tgt.device)
+
+        tgt_pred = self.transformer_decoder(
             tgt=tgt_emb,
             memory=memory,
+            tgt_mask=tgt_mask,
+            tgt_key_padding_mask=None,
             memory_key_padding_mask=memory_key_padding_mask,
         )
 

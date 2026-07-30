@@ -8,4 +8,4 @@ huggingface_hub
 datasets
 wandb
 rich
-flash-attn
+transformers

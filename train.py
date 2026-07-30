@@ -26,6 +26,8 @@ def train(
     patience: int = 20,
     batch_size: int = 16,
     check_val_every_n_epoch: int = 5,
+    is_flash: bool = False,
+    pretrained_path: str = None,
 ):
     gc.collect()
     torch.cuda.empty_cache()
@@ -36,6 +38,8 @@ def train(
     print(f"\tModel type: {model_type}")
     print(f"\tAttention window: {attn_window} (Used if model type is transformer/transformer2)")
     print(f"\tUse voice change token: {use_voice_change_token}")
+    print(f"\tIs flash: {is_flash}")
+    print(f"\tPretrained path: {pretrained_path}")
     print(f"\tEpochs: {epochs}")
     print(f"\tPatience: {patience}")
     print(f"\tBatch size: {batch_size}")
@@ -91,7 +95,7 @@ def train(
         datamodule.setup(stage="fit")
         w2i, i2w = datamodule.get_w2i_and_i2w()
 
-        # Model with FlashAttention + optional torch.compile
+        # Model with MusicFM encoder
         model = A2STransformer2(
             max_seq_len=datamodule.get_max_seq_len(),
             max_audio_len=datamodule.get_max_audio_len(),
@@ -99,7 +103,8 @@ def train(
             i2w=i2w,
             attn_window=attn_window,
             teacher_forcing_prob=0.2,
-            compile=False,
+            is_flash=is_flash,
+            pretrained_path=pretrained_path,
         )
 
     else:
