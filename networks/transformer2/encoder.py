@@ -42,23 +42,23 @@ class Res2dModule(nn.Module):
 
 
 class Conv2dSubsampling(nn.Module):
-    def __init__(self, in_channels=1, out_channels=512):
+    def __init__(self, in_channels=1, out_channels=512, input_height=128):
         super().__init__()
         self.module1 = Res2dModule(in_channels, out_channels, stride=(2, 2))
         self.module2 = Res2dModule(out_channels, out_channels, stride=(2, 2))
-        self.linear = None
+        with torch.no_grad():
+            dummy = torch.zeros(1, in_channels, input_height, 1)
+            dummy = self.module1(dummy)
+            dummy = self.module2(dummy)
+            freq_out = dummy.shape[2]
+        self.linear = nn.Linear(out_channels * freq_out, 1024)
 
     def forward(self, x):
-        B, C, H, W = x.shape
         x = self.module1(x)
         x = self.module2(x)
         B, C, H, W = x.shape
         x = x.permute(0, 3, 1, 2).contiguous()
         x = x.reshape(B, W, C * H)
-
-        if self.linear is None:
-            self.linear = nn.Linear(C * H, 1024, device=x.device, dtype=x.dtype)
-
         x = self.linear(x)
         return x
 
@@ -91,7 +91,11 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         x = self.conv(x)
-        x = self.conformer(x)[0] if not self.is_flash else self.conformer(x)
+        out = self.conformer(x) if self.is_flash else self.conformer(x)
+        if isinstance(out, torch.Tensor):
+            x = out
+        else:
+            x = out[0]
         x = self.proj(x)
         return x
 
