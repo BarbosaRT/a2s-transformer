@@ -32,6 +32,9 @@ def train(
     musicfm_stat_path: str = None,
     musicfm_layer_ix: int = 12,
     freeze_encoder: bool = False,
+    use_superconvergence: bool = False,
+    max_lr: float = 1e-3,
+    lr: float = 2e-4,
     strategy: str = "ddp_find_unused_parameters_true",
 ):
     gc.collect()
@@ -48,6 +51,9 @@ def train(
     print(f"\tMusicFM stat path: {musicfm_stat_path}")
     print(f"\tMusicFM layer ix: {musicfm_layer_ix}")
     print(f"\tFreeze encoder: {freeze_encoder}")
+    print(f"\tUse superconvergence: {use_superconvergence}")
+    print(f"\tMax LR: {max_lr}")
+    print(f"\tBase LR: {lr}")
     print(f"\tEpochs: {epochs}")
     print(f"\tPatience: {patience}")
     print(f"\tBatch size: {batch_size}")
@@ -101,7 +107,11 @@ def train(
             batch_size=batch_size,
         )
         datamodule.setup(stage="fit")
+        datamodule.setup(stage="test")
         w2i, i2w = datamodule.get_w2i_and_i2w()
+
+        train_loader_initial = datamodule.train_dataloader()
+        steps_per_epoch = len(train_loader_initial)
 
         # Model with MusicFM encoder
         model = A2STransformer2(
@@ -116,26 +126,58 @@ def train(
             musicfm_stat_path=musicfm_stat_path,
             musicfm_layer_ix=musicfm_layer_ix,
             freeze_encoder=freeze_encoder,
+            use_superconvergence=use_superconvergence,
+            max_lr=max_lr,
+            lr=lr,
+            max_epochs=epochs,
+            steps_per_epoch=steps_per_epoch,
         )
 
-        # Pre-compute encoder outputs once if frozen
+        # Pre-compute MusicFM 1024-dim embeddings once if frozen
         if freeze_encoder:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            model.encoder = model.encoder.to(device)
-            model.encoder.eval()
-            train_loader = datamodule.train_dataloader()
-            cached_data = []
-            with torch.no_grad():
-                for batch in train_loader:
-                    x, xl, y_in, y_out = batch
-                    x = x.to(device)
-                    xl = xl.to(device)
-                    _, hidden_states = model.encoder.get_predictions(x)
-                    enc_out = model.encoder_proj(hidden_states[musicfm_layer_ix]).cpu()
-                    xl_new = (xl.float() / ENC_FRAMES_PER_SAMPLE).ceil_().long().cpu()
-                    cached_data.append((enc_out, xl_new, y_in, y_out))
-            model.encoder = model.encoder.cpu()
-            print(f"Cached {len(cached_data)} training batches of encoder outputs")
+            num_gpus = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            print(f"Pre-computing MusicFM embeddings on {num_gpus} GPU(s) with micro-batching...")
+
+            encoder_eval = model.encoder.to(device)
+            encoder_eval.eval()
+            if num_gpus > 1:
+                encoder_dp = torch.nn.DataParallel(encoder_eval)
+            else:
+                encoder_dp = encoder_eval
+
+            micro_batch_size = 4  # Safe micro-batch size to prevent CUDA OOM on 16GB GPUs
+
+            def cache_dataloader(loader, is_train=True):
+                cached = []
+                with torch.no_grad():
+                    for batch in loader:
+                        if is_train:
+                            x, xl, y_in, y_out = batch
+                        else:
+                            x, xl, y = batch
+
+                        B = x.size(0)
+                        embs = []
+                        for start_idx in range(0, B, micro_batch_size):
+                            x_micro = x[start_idx : start_idx + micro_batch_size].to(device)
+                            if num_gpus > 1:
+                                _, hidden_states = encoder_dp.module.get_predictions(x_micro)
+                            else:
+                                _, hidden_states = encoder_dp.get_predictions(x_micro)
+                            emb_micro = hidden_states[musicfm_layer_ix].cpu()
+                            embs.append(emb_micro)
+                            del x_micro, hidden_states
+                            if torch.cuda.is_available():
+                                torch.cuda.empty_cache()
+
+                        emb_full = torch.cat(embs, dim=0)
+                        xl_new = (xl.float() / ENC_FRAMES_PER_SAMPLE).ceil_().long()
+                        if is_train:
+                            cached.append((emb_full, xl_new, y_in, y_out))
+                        else:
+                            cached.append((emb_full, xl_new, y))
+                return cached
 
             class CachedDataset(torch.utils.data.Dataset):
                 def __init__(self, data):
@@ -148,13 +190,39 @@ def train(
             def collate_cached(batch):
                 return batch[0]
 
-            cached_loader = torch.utils.data.DataLoader(
-                CachedDataset(cached_data),
+            cached_train = cache_dataloader(train_loader_initial, is_train=True)
+            cached_train_loader = torch.utils.data.DataLoader(
+                CachedDataset(cached_train),
                 batch_size=1,
                 shuffle=True,
                 collate_fn=collate_cached,
             )
-            datamodule.train_dataloader = lambda: cached_loader
+            datamodule.train_dataloader = lambda: cached_train_loader
+            print(f"Cached {len(cached_train)} training batches of MusicFM 1024-dim embeddings.")
+
+            val_loader = datamodule.val_dataloader()
+            cached_val = cache_dataloader(val_loader, is_train=False)
+            cached_val_loader = torch.utils.data.DataLoader(
+                CachedDataset(cached_val),
+                batch_size=1,
+                shuffle=False,
+                collate_fn=collate_cached,
+            )
+            datamodule.val_dataloader = lambda: cached_val_loader
+            print(f"Cached {len(cached_val)} validation batches of MusicFM 1024-dim embeddings.")
+
+            test_loader = datamodule.test_dataloader()
+            cached_test = cache_dataloader(test_loader, is_train=False)
+            cached_test_loader = torch.utils.data.DataLoader(
+                CachedDataset(cached_test),
+                batch_size=1,
+                shuffle=False,
+                collate_fn=collate_cached,
+            )
+            datamodule.test_dataloader = lambda: cached_test_loader
+            print(f"Cached {len(cached_test)} test batches of MusicFM 1024-dim embeddings.")
+
+            model.encoder = model.encoder.cpu()
 
     else:
         print(f"Model type {model_type} not implemented")

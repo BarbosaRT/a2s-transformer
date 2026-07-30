@@ -14,7 +14,9 @@
 # IN THE SOFTWARE.
 
 import json
+import os
 import random
+import urllib.request
 import torch
 from torch import nn
 from einops import rearrange
@@ -22,6 +24,40 @@ from einops import rearrange
 from musicfm.modules.random_quantizer import RandomProjectionQuantizer
 from musicfm.modules.features import MelSTFT
 from musicfm.modules.conv import Conv2dSubsampling
+
+
+def ensure_file_downloaded(file_path):
+    if not file_path:
+        return file_path
+
+    dir_name = os.path.dirname(file_path)
+    if dir_name:
+        os.makedirs(dir_name, exist_ok=True)
+
+    filename = os.path.basename(file_path)
+    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+        if file_path.endswith(".json"):
+            try:
+                with open(file_path, "r") as f:
+                    json.load(f)
+                return file_path
+            except Exception:
+                print(f"[MusicFM] Invalid JSON file at {file_path}, re-downloading...")
+        else:
+            return file_path
+
+    url = f"https://huggingface.co/minzwon/MusicFM/resolve/main/{filename}"
+    print(f"[MusicFM] Downloading {filename} from {url} to {file_path}...")
+    try:
+        urllib.request.urlretrieve(url, file_path)
+        print(f"[MusicFM] Downloaded {filename} successfully ({os.path.getsize(file_path)} bytes).")
+    except Exception as e:
+        print(f"[MusicFM] Download failed for {filename} from {url}: {e}")
+        raise FileNotFoundError(
+            f"Could not load or download {file_path}. Please verify file location or internet connectivity."
+        )
+
+    return file_path
 
 
 class MusicFM25Hz(nn.Module):
@@ -62,6 +98,7 @@ class MusicFM25Hz(nn.Module):
         self.features = features
 
         # load feature mean / std stats
+        stat_path = ensure_file_downloaded(stat_path)
         with open(stat_path, "r") as f:
             self.stat = json.load(f)
 
@@ -118,7 +155,8 @@ class MusicFM25Hz(nn.Module):
 
         # load model
         if model_path:
-            S = torch.load(model_path)["state_dict"]
+            model_path = ensure_file_downloaded(model_path)
+            S = torch.load(model_path, map_location="cpu")["state_dict"]
             SS = {k[6:]: v for k, v in S.items()}
             self.load_state_dict(SS, strict=True)
 

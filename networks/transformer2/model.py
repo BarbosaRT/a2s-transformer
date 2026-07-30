@@ -34,6 +34,11 @@ class A2STransformer(LightningModule):
         musicfm_stat_path=None,
         musicfm_layer_ix=12,
         freeze_encoder=False,
+        use_superconvergence=False,
+        max_lr=1e-3,
+        lr=2e-4,
+        max_epochs=150,
+        steps_per_epoch=100,
     ):
         super(A2STransformer, self).__init__()
         self.save_hyperparameters()
@@ -46,6 +51,11 @@ class A2STransformer(LightningModule):
         self.teacher_forcing_prob = teacher_forcing_prob
         self.freeze_encoder = freeze_encoder
         self.musicfm_layer_ix = musicfm_layer_ix
+        self.use_superconvergence = use_superconvergence
+        self.max_lr = max_lr
+        self.lr = lr
+        self.max_epochs = max_epochs
+        self.steps_per_epoch = steps_per_epoch
 
         self.encoder = MusicFM25Hz(
             is_flash=is_flash,
@@ -85,31 +95,67 @@ class A2STransformer(LightningModule):
             pass
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(
+        optimizer = torch.optim.AdamW(
             filter(lambda p: p.requires_grad, self.parameters()),
-            lr=2e-4,
+            lr=self.lr,
+            weight_decay=1e-4,
         )
-        scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
-            optimizer,
-            T_max=150,
-            eta_min=2e-5,
-        )
-        return {
-            "optimizer": optimizer,
-            "lr_scheduler": {
-                "scheduler": scheduler,
-                "interval": "epoch",
-            },
-        }
+
+        if self.use_superconvergence:
+            total_steps = None
+            try:
+                if self.trainer is not None:
+                    est = self.trainer.estimated_stepping_batches
+                    if est != float("inf") and est > 0:
+                        total_steps = int(est)
+            except (RuntimeError, AttributeError):
+                pass
+
+            if total_steps is None:
+                total_steps = int(self.max_epochs * self.steps_per_epoch)
+
+            scheduler = torch.optim.lr_scheduler.OneCycleLR(
+                optimizer,
+                max_lr=self.max_lr,
+                total_steps=total_steps,
+                pct_start=0.3,
+                div_factor=25.0,
+                final_div_factor=1000.0,
+                anneal_strategy="cos",
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "step",
+                },
+            }
+        else:
+            scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
+                optimizer,
+                T_max=self.max_epochs,
+                eta_min=self.lr / 10.0,
+            )
+            return {
+                "optimizer": optimizer,
+                "lr_scheduler": {
+                    "scheduler": scheduler,
+                    "interval": "epoch",
+                },
+            }
 
     def forward(self, x, xl, y_in):
-        if self.freeze_encoder:
+        if self.freeze_encoder and x.ndim == 3:
+            # x is already precomputed MusicFM embeddings (B, T, 1024) or projected (B, T, 256)
+            if x.size(2) == 1024:
+                x = self.encoder_proj(x)
             return self.decoder(tgt=y_in, memory=x, memory_len=xl)
+
         _, hidden_states = self.encoder.get_predictions(x)
         emb = hidden_states[self.musicfm_layer_ix]
-        x = self.encoder_proj(emb)
+        x_proj = self.encoder_proj(emb)
         xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
-        y_out_hat = self.decoder(tgt=y_in, memory=x, memory_len=xl_new)
+        y_out_hat = self.decoder(tgt=y_in, memory=x_proj, memory_len=xl_new)
         return y_out_hat
 
     def train(self, mode=True):
@@ -141,9 +187,14 @@ class A2STransformer(LightningModule):
         B = x.size(0)
         device = x.device
 
-        _, hidden_states = self.encoder.get_predictions(x)
-        x = self.encoder_proj(hidden_states[self.musicfm_layer_ix])
-        xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
+        if self.freeze_encoder and x.ndim == 3:
+            if x.size(2) == 1024:
+                x = self.encoder_proj(x)
+            xl_new = xl
+        else:
+            _, hidden_states = self.encoder.get_predictions(x)
+            x = self.encoder_proj(hidden_states[self.musicfm_layer_ix])
+            xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
 
         sos = self.w2i[SOS_TOKEN]
         eos = self.w2i[EOS_TOKEN]
