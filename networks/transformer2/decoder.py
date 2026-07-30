@@ -47,6 +47,7 @@ class Decoder(nn.Module):
             dropout_p=dropout_p,
         )
 
+        self.padding_idx = padding_idx
         self.attn_window = attn_window
         self.transformer_decoder = nn.TransformerDecoder(
             decoder_layer=nn.TransformerDecoderLayer(
@@ -69,14 +70,13 @@ class Decoder(nn.Module):
         tgt_emb = self.pos_1d(self.embedding(tgt))
 
         memory_key_padding_mask = self.get_memory_key_padding_mask(memory, memory_len)
-
-        tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt.size(1), tgt.device)
+        tgt_mask, tgt_key_padding_mask = self.get_tgt_masks(tgt)
 
         tgt_pred = self.transformer_decoder(
             tgt=tgt_emb,
             memory=memory,
             tgt_mask=tgt_mask,
-            tgt_key_padding_mask=None,
+            tgt_key_padding_mask=tgt_key_padding_mask,
             memory_key_padding_mask=memory_key_padding_mask,
         )
 
@@ -91,3 +91,24 @@ class Decoder(nn.Module):
         B, S = memory.shape[:2]
         positions = torch.arange(S, device=memory.device).unsqueeze(0).expand(B, S)
         return positions >= memory_len.unsqueeze(1)
+
+    @staticmethod
+    def create_variable_window_mask(size, window_size, dtype=torch.float32, device=torch.device("cpu")):
+        mask = torch.full((size, size), float("-inf"), dtype=dtype, device=device)
+        for i in range(size):
+            if window_size < size:
+                start = max(0, i - window_size)
+                mask[i, start : i + 1] = 0
+            else:
+                mask[i, : i + 1] = 0
+        return mask
+
+    def get_tgt_masks(self, tgt):
+        tgt_sec_len = tgt.shape[1]
+        if self.attn_window > 0:
+            tgt_mask = self.create_variable_window_mask(tgt_sec_len, self.attn_window, device=tgt.device)
+        else:
+            tgt_mask = nn.Transformer.generate_square_subsequent_mask(tgt_sec_len, tgt.device)
+
+        tgt_pad_mask = tgt == self.padding_idx
+        return tgt_mask, tgt_pad_mask

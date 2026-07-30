@@ -28,6 +28,7 @@ def train(
     check_val_every_n_epoch: int = 5,
     is_flash: bool = False,
     pretrained_path: str = None,
+    strategy: str = "ddp_find_unused_parameters_true",
 ):
     gc.collect()
     torch.cuda.empty_cache()
@@ -153,6 +154,7 @@ def train(
         deterministic=False,  # If True, raises error saying that CTC loss does not have this behaviour
         benchmark=False,
         precision="16-mixed",  # Mixed precision training
+        strategy=strategy,
     )
     ckpt_path = f"weights/{model_type}/{ds_name}.ckpt"
     resume_ckpt = ckpt_path if os.path.exists(ckpt_path) else None

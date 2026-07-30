@@ -91,7 +91,7 @@ class Encoder(nn.Module):
 
     def forward(self, x):
         x = self.conv(x)
-        out = self.conformer(x) if self.is_flash else self.conformer(x)
+        out = self.conformer(x)
         if isinstance(out, torch.Tensor):
             x = out
         else:
