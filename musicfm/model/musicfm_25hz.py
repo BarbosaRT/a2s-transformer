@@ -26,7 +26,7 @@ from musicfm.modules.features import MelSTFT
 from musicfm.modules.conv import Conv2dSubsampling
 
 
-def ensure_file_downloaded(file_path):
+def ensure_file_downloaded(file_path, force=False):
     if not file_path:
         return file_path
 
@@ -35,7 +35,8 @@ def ensure_file_downloaded(file_path):
         os.makedirs(dir_name, exist_ok=True)
 
     filename = os.path.basename(file_path)
-    if os.path.exists(file_path) and os.path.getsize(file_path) > 0:
+
+    if not force and os.path.exists(file_path) and os.path.getsize(file_path) > 0:
         if file_path.endswith(".json"):
             try:
                 with open(file_path, "r") as f:
@@ -44,14 +45,38 @@ def ensure_file_downloaded(file_path):
             except Exception:
                 print(f"[MusicFM] Invalid JSON file at {file_path}, re-downloading...")
         else:
-            return file_path
+            try:
+                torch.load(file_path, map_location="cpu", weights_only=False)
+                return file_path
+            except TypeError:
+                try:
+                    torch.load(file_path, map_location="cpu")
+                    return file_path
+                except Exception as err:
+                    print(f"[MusicFM] Corrupted/truncated file at {file_path} ({err}), re-downloading...")
+            except Exception as err:
+                print(f"[MusicFM] Corrupted/truncated file at {file_path} ({err}), re-downloading...")
 
     url = f"https://huggingface.co/minzwon/MusicFM/resolve/main/{filename}"
     print(f"[MusicFM] Downloading {filename} from {url} to {file_path}...")
+
+    tmp_path = file_path + ".tmp"
+    if os.path.exists(tmp_path):
+        try:
+            os.remove(tmp_path)
+        except Exception:
+            pass
+
     try:
-        urllib.request.urlretrieve(url, file_path)
+        urllib.request.urlretrieve(url, tmp_path)
+        os.replace(tmp_path, file_path)
         print(f"[MusicFM] Downloaded {filename} successfully ({os.path.getsize(file_path)} bytes).")
     except Exception as e:
+        if os.path.exists(tmp_path):
+            try:
+                os.remove(tmp_path)
+            except Exception:
+                pass
         print(f"[MusicFM] Download failed for {filename} from {url}: {e}")
         raise FileNotFoundError(
             f"Could not load or download {file_path}. Please verify file location or internet connectivity."
@@ -157,9 +182,23 @@ class MusicFM25Hz(nn.Module):
         if model_path:
             model_path = ensure_file_downloaded(model_path)
             try:
-                S = torch.load(model_path, map_location="cpu", weights_only=False)["state_dict"]
-            except TypeError:
-                S = torch.load(model_path, map_location="cpu")["state_dict"]
+                try:
+                    S = torch.load(model_path, map_location="cpu", weights_only=False)["state_dict"]
+                except TypeError:
+                    S = torch.load(model_path, map_location="cpu")["state_dict"]
+            except Exception as e:
+                print(f"[MusicFM] Failed to load checkpoint at {model_path} ({e}). Re-downloading fresh file...")
+                if os.path.exists(model_path):
+                    try:
+                        os.remove(model_path)
+                    except Exception:
+                        pass
+                model_path = ensure_file_downloaded(model_path, force=True)
+                try:
+                    S = torch.load(model_path, map_location="cpu", weights_only=False)["state_dict"]
+                except TypeError:
+                    S = torch.load(model_path, map_location="cpu")["state_dict"]
+
             SS = {k[6:]: v for k, v in S.items()}
             self.load_state_dict(SS, strict=True)
 
