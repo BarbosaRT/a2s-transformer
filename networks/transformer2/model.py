@@ -25,6 +25,7 @@ class A2STransformer(LightningModule):
         teacher_forcing_prob=0.5,
         is_flash=False,
         pretrained_path=None,
+        freeze_encoder=False,
     ):
         super(A2STransformer, self).__init__()
         self.save_hyperparameters()
@@ -35,6 +36,7 @@ class A2STransformer(LightningModule):
         self.max_audio_len = max_audio_len
         self.max_seq_len = max_seq_len
         self.teacher_forcing_prob = teacher_forcing_prob
+        self.freeze_encoder = freeze_encoder
 
         self.encoder = Encoder(in_channels=NUM_CHANNELS, is_flash=is_flash)
         self.decoder = Decoder(
@@ -47,6 +49,9 @@ class A2STransformer(LightningModule):
 
         if pretrained_path is not None:
             self.encoder.load_pretrained(pretrained_path)
+
+        if freeze_encoder:
+            self.encoder.requires_grad_(False)
 
         self.compute_loss = CrossEntropyLoss(ignore_index=self.padding_idx)
         self.Y = []
@@ -72,7 +77,10 @@ class A2STransformer(LightningModule):
             pass
 
     def configure_optimizers(self):
-        optimizer = torch.optim.Adam(self.parameters(), lr=2e-4)
+        optimizer = torch.optim.Adam(
+            filter(lambda p: p.requires_grad, self.parameters()),
+            lr=2e-4,
+        )
         scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(
             optimizer,
             T_max=150,
@@ -87,10 +95,18 @@ class A2STransformer(LightningModule):
         }
 
     def forward(self, x, xl, y_in):
+        if self.freeze_encoder:
+            return self.decoder(tgt=y_in, memory=x, memory_len=xl)
         x = self.encoder(x)
         xl_new = torch.ceil(xl.float() / 4).long()
         y_out_hat = self.decoder(tgt=y_in, memory=x, memory_len=xl_new)
         return y_out_hat
+
+    def train(self, mode=True):
+        super().train(mode)
+        if self.freeze_encoder:
+            self.encoder.eval()
+        return self
 
     def apply_teacher_forcing(self, y):
         y_errored = y.clone()

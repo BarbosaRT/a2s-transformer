@@ -28,6 +28,7 @@ def train(
     check_val_every_n_epoch: int = 5,
     is_flash: bool = False,
     pretrained_path: str = None,
+    freeze_encoder: bool = False,
     strategy: str = "ddp_find_unused_parameters_true",
 ):
     gc.collect()
@@ -41,6 +42,7 @@ def train(
     print(f"\tUse voice change token: {use_voice_change_token}")
     print(f"\tIs flash: {is_flash}")
     print(f"\tPretrained path: {pretrained_path}")
+    print(f"\tFreeze encoder: {freeze_encoder}")
     print(f"\tEpochs: {epochs}")
     print(f"\tPatience: {patience}")
     print(f"\tBatch size: {batch_size}")
@@ -106,7 +108,44 @@ def train(
             teacher_forcing_prob=0.2,
             is_flash=is_flash,
             pretrained_path=pretrained_path,
+            freeze_encoder=freeze_encoder,
         )
+
+        # Pre-compute encoder outputs once if frozen
+        if freeze_encoder:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = model.to(device)
+            model.encoder.eval()
+            train_loader = datamodule.train_dataloader()
+            cached_data = []
+            with torch.no_grad():
+                for batch in train_loader:
+                    x, xl, y_in, y_out = batch
+                    x = x.to(device)
+                    xl = xl.to(device)
+                    enc_out = model.encoder(x)
+                    xl_new = torch.ceil(xl.float() / 4).long()
+                    cached_data.append((enc_out.cpu(), xl_new.cpu(), y_in, y_out))
+            print(f"Cached {len(cached_data)} training batches of encoder outputs")
+
+            class CachedDataset(torch.utils.data.Dataset):
+                def __init__(self, data):
+                    self.data = data
+                def __len__(self):
+                    return len(self.data)
+                def __getitem__(self, idx):
+                    return self.data[idx]
+
+            def collate_cached(batch):
+                return batch[0]
+
+            cached_loader = torch.utils.data.DataLoader(
+                CachedDataset(cached_data),
+                batch_size=1,
+                shuffle=True,
+                collate_fn=collate_cached,
+            )
+            datamodule.train_dataloader = lambda: cached_loader
 
     else:
         print(f"Model type {model_type} not implemented")
