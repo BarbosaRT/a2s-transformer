@@ -145,12 +145,6 @@ class A2STransformer(LightningModule):
             }
 
     def forward(self, x, xl, y_in):
-        if self.freeze_encoder and x.ndim == 3:
-            # x is already precomputed MusicFM embeddings (B, T, 1024) or projected (B, T, 256)
-            if x.size(2) == 1024:
-                x = self.encoder_proj(x)
-            return self.decoder(tgt=y_in, memory=x, memory_len=xl)
-
         _, hidden_states = self.encoder.get_predictions(x)
         emb = hidden_states[self.musicfm_layer_ix]
         x_proj = self.encoder_proj(emb)
@@ -187,14 +181,9 @@ class A2STransformer(LightningModule):
         B = x.size(0)
         device = x.device
 
-        if self.freeze_encoder and x.ndim == 3:
-            if x.size(2) == 1024:
-                x = self.encoder_proj(x)
-            xl_new = xl
-        else:
-            _, hidden_states = self.encoder.get_predictions(x)
-            x = self.encoder_proj(hidden_states[self.musicfm_layer_ix])
-            xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
+        _, hidden_states = self.encoder.get_predictions(x)
+        x = self.encoder_proj(hidden_states[self.musicfm_layer_ix])
+        xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
 
         sos = self.w2i[SOS_TOKEN]
         eos = self.w2i[EOS_TOKEN]
