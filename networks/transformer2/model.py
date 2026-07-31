@@ -99,6 +99,7 @@ class A2STransformer(LightningModule):
             filter(lambda p: p.requires_grad, self.parameters()),
             lr=self.lr,
             weight_decay=1e-4,
+            eps=1e-6,
         )
 
         if self.use_superconvergence:
@@ -145,7 +146,8 @@ class A2STransformer(LightningModule):
             }
 
     def forward(self, x, xl, y_in):
-        _, hidden_states = self.encoder.get_predictions(x)
+        with torch.autocast(device_type="cuda", enabled=False):
+            _, hidden_states = self.encoder.get_predictions(x)
         emb = hidden_states[self.musicfm_layer_ix]
         x_proj = self.encoder_proj(emb)
         xl_new = torch.ceil(xl.float() / ENC_FRAMES_PER_SAMPLE).long()
@@ -171,6 +173,8 @@ class A2STransformer(LightningModule):
         x, xl, y_in, y_out = batch
         y_in = self.apply_teacher_forcing(y_in)
         yhat = self.forward(x=x, xl=xl, y_in=y_in)
+        if torch.isnan(yhat).any():
+            self.log("nan_in_logits", 1.0, logger=True)
         loss = self.compute_loss(yhat, y_out)
         self.log("train_loss", loss, prog_bar=True, logger=True, on_epoch=True)
         return loss

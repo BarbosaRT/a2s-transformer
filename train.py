@@ -176,6 +176,8 @@ def train(
         deterministic=False,  # If True, raises error saying that CTC loss does not have this behaviour
         benchmark=False,
         precision="16-mixed",  # Mixed precision training
+        gradient_clip_val=1.0,
+        gradient_clip_algorithm="norm",
         strategy=strategy,
     )
     ckpt_path = f"weights/{model_type}/{ds_name}.ckpt"

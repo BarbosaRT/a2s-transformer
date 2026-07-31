@@ -99,7 +99,7 @@ class A2STransformer(LightningModule):
 
     def configure_optimizers(self):
         #TODO: Return this to normal (when doing final training)
-        optimizer = torch.optim.AdamW(self.parameters(), betas=(0.9, 0.98), eps=1e-9, weight_decay=1e-4, lr=1e-4)
+        optimizer = torch.optim.AdamW(self.parameters(), betas=(0.9, 0.98), lr=1e-4)
         
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
@@ -109,7 +109,6 @@ class A2STransformer(LightningModule):
             anneal_strategy='cos', # cosine annealing
             pct_start=0.2,         # percentage of the cycle spent increasing the learning rate
             div_factor=25.0,       # initial LR = max_lr / div_factor
-            final_div_factor=1e4,  # final LR = initial LR / final_div
         )
         return {
             "optimizer": optimizer,
