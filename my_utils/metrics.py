@@ -7,13 +7,25 @@ from pyMV2H.metrics.mv2h import mv2h
 from pyMV2H.utils.music import Music
 from pyMV2H.converter.midi_converter import MidiConverter as Converter
 
-from .encoding_convertions import VOICE_CHANGE_TOKEN, STEP_CHANGE_TOKEN
+from .encoding_convertions import (
+    VOICE_CHANGE_TOKEN,
+    STEP_CHANGE_TOKEN,
+    st_plus_to_kern,
+    midi2score_to_kern,
+)
 
 
-def compute_metrics(y_true, y_pred):
+def compute_metrics(y_true, y_pred, tokenization: str = "kern"):
     ################################# Sym-ER and Seq-ER:
     metrics = compute_ed_metrics(y_true=y_true, y_pred=y_pred)
     ################################# MV2H:
+    # Convert non-kern tokenizations back to **kern so MV2H can be applied
+    if tokenization == "st_plus":
+        y_true = [st_plus_to_kern(t) for t in y_true]
+        y_pred = [st_plus_to_kern(h) for h in y_pred]
+    elif tokenization == "midi2score":
+        y_true = [midi2score_to_kern(t) for t in y_true]
+        y_pred = [midi2score_to_kern(h) for h in y_pred]
     mv2h_dict = compute_mv2h_metrics(y_true=y_true, y_pred=y_pred)
     metrics.update(mv2h_dict)
     return metrics
@@ -194,29 +206,35 @@ def compute_mv2h_metrics(y_true, y_pred):
                         line.append(".")
 
     MV2H_global = MV2H(multi_pitch=0, voice=0, meter=0, harmony=0, note_value=0)
+    n_evaluated = 0
     for t, h in zip(y_true, y_pred):
         # Get number of voices
         num_voices = get_number_of_voices(t)
+        if num_voices == 0:
+            # Ground truth without notes (e.g. empty MIDI2Score stream): skip
+            continue
 
         # GROUND TRUTH
         # Creating ground truth Kern file
-        create_kern_file(f"true_{os.getpid()}.krn", t, num_voices)
-
-        # PREDICTION
-        # Creating predicted Kern file
-        create_kern_file(f"pred_{os.getpid()}.krn", h, num_voices)
-
-        # Testing whether predicted Kern can be processed as polyphonic
-        flag_polyphonic_kern = True
         try:
-            _ = converterm21.parse(f"pred_{os.getpid()}.krn").write("midi")
-        except:
-            flag_polyphonic_kern = False
+            create_kern_file(f"true_{os.getpid()}.krn", t, num_voices)
+            create_kern_file(f"pred_{os.getpid()}.krn", h, num_voices)
 
-        if flag_polyphonic_kern:
-            res_dict = eval_as_polyphonic()
-        else:
-            res_dict = eval_as_monophonic(num_voices)
+            # Testing whether predicted Kern can be processed as polyphonic
+            flag_polyphonic_kern = True
+            try:
+                _ = converterm21.parse(f"pred_{os.getpid()}.krn").write("midi")
+            except:
+                flag_polyphonic_kern = False
+
+            if flag_polyphonic_kern:
+                res_dict = eval_as_polyphonic()
+            else:
+                res_dict = eval_as_monophonic(num_voices)
+        except Exception:
+            # Malformed ground truth/prediction (e.g. music21 repeat errors):
+            # skip this pair instead of crashing the whole evaluation.
+            continue
 
         # Updating global results
         MV2H_global.__multi_pitch__ += res_dict.multi_pitch
@@ -224,13 +242,23 @@ def compute_mv2h_metrics(y_true, y_pred):
         MV2H_global.__meter__ += res_dict.meter
         MV2H_global.__harmony__ += res_dict.harmony
         MV2H_global.__note_value__ += res_dict.note_value
+        n_evaluated += 1
 
     # Computing average
-    MV2H_global.__multi_pitch__ /= len(y_true)
-    MV2H_global.__voice__ /= len(y_true)
-    MV2H_global.__meter__ /= len(y_true)
-    MV2H_global.__harmony__ /= len(y_true)
-    MV2H_global.__note_value__ /= len(y_true)
+    if n_evaluated == 0:
+        return {
+            "multi-pitch": 0.0,
+            "voice": 0.0,
+            "meter": 0.0,
+            "harmony": 0.0,
+            "note_value": 0.0,
+            "mv2h": 0.0,
+        }
+    MV2H_global.__multi_pitch__ /= n_evaluated
+    MV2H_global.__voice__ /= n_evaluated
+    MV2H_global.__meter__ /= n_evaluated
+    MV2H_global.__harmony__ /= n_evaluated
+    MV2H_global.__note_value__ /= n_evaluated
 
     mv2h_dict = {
         "multi-pitch": MV2H_global.__multi_pitch__,

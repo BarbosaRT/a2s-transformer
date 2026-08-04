@@ -1,3 +1,5 @@
+import math
+
 import joblib
 
 import torch
@@ -21,13 +23,23 @@ def get_spectrogram_from_raw_audio(raw_audio: np.ndarray, sr: float) -> np.ndarr
     y = librosa.resample(raw_audio, orig_sr=sr, target_sr=new_sr)
 
     stft_fmax = 2093
-    stft_frequency_filter_max = librosa.fft_frequencies(sr=new_sr, n_fft=2048) <= stft_fmax
+    stft_frequencies = librosa.fft_frequencies(sr=new_sr, n_fft=2048)
+    stft_frequency_filter_max = stft_frequencies <= stft_fmax
 
     stft = librosa.stft(y, hop_length=512, win_length=2048, window="hann")
     stft = stft[stft_frequency_filter_max]
 
     stft_db = librosa.amplitude_to_db(np.abs(np.array(stft)), ref=np.max)
     log_stft = ((1.0 / 80.0) * stft_db) + 1.0
+
+    # Interpolate the frequency axis onto IMG_HEIGHT (128) bins so the log-STFT
+    # matches the encoder's expected input height (IMG_HEIGHT // HEIGHT_REDUCTION).
+    if log_stft.shape[0] != IMG_HEIGHT:
+        old_freqs = stft_frequencies[stft_frequency_filter_max]
+        new_freqs = np.linspace(old_freqs[0], old_freqs[-1], IMG_HEIGHT)
+        log_stft = np.array(
+            [np.interp(new_freqs, old_freqs, frame) for frame in log_stft.T]
+        ).T
 
     return log_stft
 
@@ -67,6 +79,25 @@ def preprocess_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> t
     x = torch.from_numpy(x)  # [1, freq_bins, time_frames]
     x = x.type(dtype=dtype)
     return x
+
+
+@MEMORY.cache
+def preprocess_log_stft_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> torch.Tensor:
+    # Get log-STFT spectrogram (already normalized), 128 frequency bins
+    x = get_spectrogram_from_raw_audio(raw_audio, sr)
+    # Convert to PyTorch tensor
+    x = np.expand_dims(x, 0)
+    x = torch.from_numpy(x)  # [1, freq_bins, time_frames]
+    x = x.type(dtype=dtype)
+    return x
+
+
+def get_spectrogram_number_of_frames(width: int) -> int:
+    # Encoder output sequence length for the spectrogram encoder:
+    # (IMG_HEIGHT // HEIGHT_REDUCTION) * ceil(width / WIDTH_REDUCTION)
+    from networks.transformer.encoder import HEIGHT_REDUCTION, WIDTH_REDUCTION
+
+    return math.ceil(IMG_HEIGHT / HEIGHT_REDUCTION) * math.ceil(width / WIDTH_REDUCTION)
 
 
 ################################# CTC PREPROCESSING:

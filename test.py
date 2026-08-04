@@ -8,6 +8,7 @@ from lightning.pytorch.loggers.wandb import WandbLogger
 
 from networks.crnn.model import CTCTrainedCRNN
 from networks.transformer.model import A2STransformer
+from networks.transformer2.model import A2STransformer as A2STransformer2
 from my_utils.ctc_dataset import CTCDataModule
 from my_utils.ar_dataset import ARDataModule
 from my_utils.seed import seed_everything
@@ -20,6 +21,8 @@ def test(
     model_type: str = "crnn",
     use_voice_change_token: bool = False,
     checkpoint_path: str = "",
+    audio_mode: str = None,
+    tokenization: str = "kern",
 ):
     gc.collect()
     torch.cuda.empty_cache()
@@ -35,12 +38,17 @@ def test(
     # Get source dataset name
     src_ds_name = os.path.basename(checkpoint_path).split(".")[0]
 
+    if audio_mode is None:
+        audio_mode = "musicfm" if model_type == "transformer2" else "spectrogram"
+
     # Experiment info
     print("TEST EXPERIMENT")
     print(f"\tSource dataset: {src_ds_name}")
     print(f"\tTest dataset: {ds_name}")
     print(f"\tModel type: {model_type}")
     print(f"\tUse voice change token: {use_voice_change_token}")
+    print(f"\tAudio mode: {audio_mode}")
+    print(f"\tTokenization: {tokenization}")
     print(f"\tCheckpoint path: {checkpoint_path}")
 
     if model_type == "crnn":
@@ -60,12 +68,28 @@ def test(
         datamodule = ARDataModule(
             ds_name=ds_name,
             use_voice_change_token=use_voice_change_token,
+            audio_mode=audio_mode,
+            tokenization=tokenization,
         )
         datamodule.setup(stage="test")
         ytest_i2w = datamodule.test_ds.i2w
 
         # Model
-        model = A2STransformer.load_from_checkpoint(checkpoint_path, ytest_i2w=ytest_i2w)
+        model = A2STransformer.load_from_checkpoint(checkpoint_path, ytest_i2w=ytest_i2w, tokenization=tokenization)
+
+    elif model_type == "transformer2":
+        # Data module
+        datamodule = ARDataModule(
+            ds_name=ds_name,
+            use_voice_change_token=use_voice_change_token,
+            audio_mode=audio_mode,
+            tokenization=tokenization,
+        )
+        datamodule.setup(stage="test")
+        ytest_i2w = datamodule.test_ds.i2w
+
+        # Model
+        model = A2STransformer2.load_from_checkpoint(checkpoint_path, ytest_i2w=ytest_i2w, tokenization=tokenization)
 
     else:
         print(f"Model type {model_type} not implemented")

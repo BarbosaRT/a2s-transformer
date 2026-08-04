@@ -402,6 +402,8 @@ FodyWeavers.xsd
 
 # Extras
 Quartets
+Piano
+.venv
 joblib_cache
 wandb
 weights

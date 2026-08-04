@@ -39,6 +39,7 @@ class A2STransformer(LightningModule):
         lr=2e-4,
         max_epochs=150,
         steps_per_epoch=100,
+        tokenization: str = "kern",
     ):
         super(A2STransformer, self).__init__()
         self.save_hyperparameters()
@@ -46,6 +47,7 @@ class A2STransformer(LightningModule):
         self.i2w = i2w
         self.ytest_i2w = ytest_i2w if ytest_i2w is not None else i2w
         self.padding_idx = w2i["<PAD>"]
+        self.tokenization = tokenization
         self.max_audio_len = max_audio_len
         self.max_seq_len = max_seq_len
         self.teacher_forcing_prob = teacher_forcing_prob
@@ -228,7 +230,7 @@ class A2STransformer(LightningModule):
 
     @torch.no_grad()
     def on_validation_epoch_end(self, name="val", print_random_samples=False):
-        metrics = compute_metrics(y_true=self.Y, y_pred=self.YHat)
+        metrics = compute_metrics(y_true=self.Y, y_pred=self.YHat, tokenization=self.tokenization)
         for k, v in metrics.items():
             self.log(f"{name}_{k}", v, prog_bar=True, sync_dist=True, logger=True, on_epoch=True)
         if print_random_samples and len(self.Y) > 0:

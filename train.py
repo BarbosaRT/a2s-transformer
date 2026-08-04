@@ -35,9 +35,16 @@ def train(
     max_lr: float = 1e-3,
     lr: float = 2e-4,
     strategy: str = "ddp_find_unused_parameters_true",
+    audio_mode: str = None,
+    tokenization: str = "kern",
+    limit_train_batches: float = 1.0,
+    limit_val_batches: float = 1.0,
 ):
     gc.collect()
     torch.cuda.empty_cache()
+
+    if audio_mode is None:
+        audio_mode = "musicfm" if model_type == "transformer2" else "spectrogram"
 
     # Experiment info
     print("TRAIN EXPERIMENT")
@@ -45,6 +52,8 @@ def train(
     print(f"\tModel type: {model_type}")
     print(f"\tAttention window: {attn_window} (Used if model type is transformer/transformer2)")
     print(f"\tUse voice change token: {use_voice_change_token}")
+    print(f"\tAudio mode: {audio_mode}")
+    print(f"\tTokenization: {tokenization}")
     print(f"\tIs flash: {is_flash}")
     print(f"\tMusicFM path: {musicfm_path}")
     print(f"\tMusicFM stat path: {musicfm_stat_path}")
@@ -84,6 +93,8 @@ def train(
             ds_name=ds_name,
             use_voice_change_token=use_voice_change_token,
             batch_size=batch_size,
+            audio_mode=audio_mode,
+            tokenization=tokenization,
         )
         datamodule.setup(stage="fit")
         w2i, i2w = datamodule.get_w2i_and_i2w()
@@ -96,6 +107,7 @@ def train(
             i2w=i2w,
             attn_window=attn_window,
             teacher_forcing_prob=0.2,
+            tokenization=tokenization,
         )
 
     elif model_type == "transformer2":
@@ -104,6 +116,8 @@ def train(
             ds_name=ds_name,
             use_voice_change_token=use_voice_change_token,
             batch_size=batch_size,
+            audio_mode=audio_mode,
+            tokenization=tokenization,
         )
         datamodule.setup(stage="fit")
         w2i, i2w = datamodule.get_w2i_and_i2w()
@@ -128,6 +142,7 @@ def train(
             lr=lr,
             max_epochs=epochs,
             steps_per_epoch=steps_per_epoch,
+            tokenization=tokenization,
         )
 
     else:
@@ -135,10 +150,11 @@ def train(
         raise NotImplementedError
 
     # Train, validate and test
+    ckpt_name = ds_name if tokenization == "kern" else f"{ds_name}_{tokenization}"
     callbacks = [
         ModelCheckpoint(
             dirpath=f"weights/{model_type}" if not use_voice_change_token else f"weights/{model_type}-VCT",
-            filename=ds_name,
+            filename=ckpt_name,
             monitor="val_sym-er",
             verbose=True,
             save_last=False,
@@ -179,8 +195,10 @@ def train(
         gradient_clip_val=1.0,
         gradient_clip_algorithm="norm",
         strategy=strategy,
+        limit_train_batches=limit_train_batches,
+        limit_val_batches=limit_val_batches,
     )
-    ckpt_path = f"weights/{model_type}/{ds_name}.ckpt"
+    ckpt_path = f"weights/{model_type}/{ckpt_name}.ckpt"
     resume_ckpt = ckpt_path if os.path.exists(ckpt_path) else None
     if resume_ckpt and use_checkpoint:
         print(f"Resuming from checkpoint: {resume_ckpt}")

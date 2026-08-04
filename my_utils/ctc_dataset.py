@@ -8,15 +8,23 @@ from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
 from lightning.pytorch import LightningDataModule
 
-from my_utils.encoding_convertions import krnParser
+from my_utils.encoding_convertions import krnParser, midi2score_to_tokens
 from my_utils.data_preprocessing import (
     preprocess_audio,
+    preprocess_log_stft_audio,
     ctc_batch_preparation,
     set_pad_index,
 )
 
 DATASETS = ["quartets", "beethoven", "mozart", "haydn"]
+PIANO_DATASETS = ["asap-piano-excerpts"]
+PIANO_HF_DATASET = "BarbosaTest/asap-piano-excerpts"
 SPLITS = ["train", "val", "test"]
+TOKENIZATIONS = ["kern", "st_plus", "midi2score"]
+AUDIO_MODES = ["musicfm", "spectrogram"]
+CACHE_DIR = "Quartets"
+PIANO_CACHE_DIR = "Piano"
+MUSICFM_SR = 24000
 
 
 class CTCDataModule(LightningDataModule):
@@ -131,30 +139,48 @@ class CTCDataset(Dataset):
         partition_type: str,
         width_reduction: int = 2,
         use_voice_change_token: bool = False,
+        tokenization: str = "kern",
+        audio_mode: str = "musicfm",
     ):
         self.ds_name = ds_name.lower()
         self.partition_type = partition_type
         self.width_reduction = width_reduction
         self.use_voice_change_token = use_voice_change_token
+        self.tokenization = tokenization
+        self.audio_mode = audio_mode
         self.init(vocab_name="ctc_w2i")
 
     def init(self, vocab_name: str = "w2i"):
         # Initialize krn parser
         self.krn_parser = krnParser(use_voice_change_token=self.use_voice_change_token)
 
+        self.is_piano = self.ds_name in PIANO_DATASETS
+
         # Check dataset name
-        assert self.ds_name in DATASETS, f"Invalid dataset name: {self.ds_name}"
+        assert self.ds_name in DATASETS or self.is_piano, f"Invalid dataset name: {self.ds_name}"
 
         # Check partition type
         assert self.partition_type in SPLITS, f"Invalid partition type: {self.partition_type}"
 
+        if self.is_piano:
+            assert self.tokenization in TOKENIZATIONS, f"Invalid tokenization: {self.tokenization}"
+            assert self.audio_mode in AUDIO_MODES, f"Invalid audio mode: {self.audio_mode}"
+            hf_name = PIANO_HF_DATASET
+            cache_dir = PIANO_CACHE_DIR
+        else:
+            assert self.tokenization == "kern", f"Tokenization {self.tokenization} only valid for piano datasets"
+            hf_name = f"PRAIG/{self.ds_name}-quartets"
+            cache_dir = CACHE_DIR
+
         # Get audios and transcripts files
-        self.ds = load_dataset(f"PRAIG/{self.ds_name}-quartets", split=self.partition_type)
+        self.ds = load_dataset(hf_name, split=self.partition_type)
 
         # Check and retrieve vocabulary
-        vocab_folder = os.path.join("Quartets", "vocabs")
+        vocab_folder = os.path.join(cache_dir, "vocabs")
         os.makedirs(vocab_folder, exist_ok=True)
         vocab_name = self.ds_name + f"_{vocab_name}"
+        if self.is_piano:
+            vocab_name += f"_{self.tokenization}"
         vocab_name += "_withvc" if self.use_voice_change_token else ""
         vocab_name += ".json"
         self.w2i_path = os.path.join(vocab_folder, vocab_name)
@@ -164,9 +190,11 @@ class CTCDataset(Dataset):
 
         # Check and retrive max lengths
         # Set max_seq_len, max_audio_len and frame_multiplier_factor
-        max_lens_folder = os.path.join("Quartets", "max_lens")
+        max_lens_folder = os.path.join(cache_dir, "max_lens")
         os.makedirs(max_lens_folder, exist_ok=True)
         max_lens_name = vocab_name
+        if self.is_piano:
+            max_lens_name = max_lens_name[: -len(".json")] + f"_{self.audio_mode}.json"
         self.max_lens_path = os.path.join(max_lens_folder, max_lens_name)
         max_lens = self.check_and_retrieve_max_lens()
         self.max_seq_len = max_lens["max_seq_len"]
@@ -180,7 +208,9 @@ class CTCDataset(Dataset):
         x = preprocess_audio(
             raw_audio=self.ds[idx]["audio"]["array"], sr=self.ds[idx]["audio"]["sampling_rate"], dtype=torch.float32
         )
-        y = self.preprocess_transcript(text=self.ds[idx]["transcript"])
+        y = self.preprocess_transcript(self.ds[idx])
+        y = [self.w2i[w] for w in y]
+        y = torch.tensor(y, dtype=torch.int32)
         if self.partition_type == "train":
             # x.shape = [channels, height, width]
             return (
@@ -191,10 +221,15 @@ class CTCDataset(Dataset):
             )
         return x, y
 
-    def preprocess_transcript(self, text: str):
-        y = self.krn_parser.convert(text=text)
-        y = [self.w2i[w] for w in y]
-        return torch.tensor(y, dtype=torch.int32)
+    def preprocess_transcript(self, sample):
+        if self.is_piano:
+            if self.tokenization == "kern":
+                return self.krn_parser.convert(text=sample["kern"])
+            if self.tokenization == "st_plus":
+                return list(sample["st_plus"])
+            if self.tokenization == "midi2score":
+                return midi2score_to_tokens(sample["midi2score"])
+        return self.krn_parser.convert(text=sample["transcript"])
 
     def check_and_retrieve_vocabulary(self):
         w2i = {}
@@ -212,12 +247,13 @@ class CTCDataset(Dataset):
         return w2i, i2w
 
     def make_vocabulary(self):
-        full_ds = load_dataset(f"PRAIG/{self.ds_name}-quartets")
+        hf_name = PIANO_HF_DATASET if self.is_piano else f"PRAIG/{self.ds_name}-quartets"
+        full_ds = load_dataset(hf_name)
 
         vocab = []
         for split in SPLITS:
-            for text in full_ds[split]["transcript"]:
-                transcript = self.krn_parser.convert(text=text)
+            for sample in full_ds[split]:
+                transcript = self.preprocess_transcript(sample)
                 vocab.extend(transcript)
         vocab = sorted(set(vocab))
 
@@ -245,7 +281,7 @@ class CTCDataset(Dataset):
         return max_lens
 
     def make_max_lens(self):
-        # Set the maximum lengths for the whole QUARTETS collection:
+        # Set the maximum lengths for the whole collection:
         # 1) Get the maximum transcript length
         # 2) Get the maximum audio length
         # 3) Get the frame multiplier factor so that
@@ -255,24 +291,32 @@ class CTCDataset(Dataset):
         max_audio_len = 0
         max_frame_multiplier_factor = 0
 
-        full_ds = load_dataset("PRAIG/quartets-quartets")
+        hf_name = PIANO_HF_DATASET if self.is_piano else f"PRAIG/{self.ds_name}-quartets"
+        full_ds = load_dataset(hf_name)
         for split in SPLITS:
             for sample in full_ds[split]:
                 # Max transcript length
-                transcript = self.krn_parser.convert(text=sample["transcript"])
+                transcript = self.preprocess_transcript(sample)
                 max_seq_len = max(max_seq_len, len(transcript))
 
-                # Max audio length
-                audio = preprocess_audio(
-                    raw_audio=sample["audio"]["array"],
-                    sr=sample["audio"]["sampling_rate"],
-                    dtype=torch.float32,
-                )
-                max_audio_len = max(max_audio_len, audio.shape[2])
+                # Max audio length (in the units expected by each audio mode)
+                raw_audio = sample["audio"]["array"]
+                sr = sample["audio"]["sampling_rate"]
+                if self.is_piano and self.audio_mode == "musicfm":
+                    audio_len = int(round(len(raw_audio) * MUSICFM_SR / sr))
+                elif self.is_piano and self.audio_mode == "spectrogram":
+                    audio_len = preprocess_log_stft_audio(
+                        raw_audio=raw_audio, sr=sr, dtype=torch.float32
+                    ).shape[2]
+                else:
+                    audio_len = preprocess_audio(
+                        raw_audio=raw_audio, sr=sr, dtype=torch.float32
+                    ).shape[2]
+                max_audio_len = max(max_audio_len, audio_len)
                 # Max frame multiplier factor
                 max_frame_multiplier_factor = max(
                     max_frame_multiplier_factor,
-                    math.ceil(((2 * len(transcript)) + 1) / audio.shape[2]),
+                    math.ceil(((2 * len(transcript)) + 1) / max(1, audio_len)),
                 )
 
         return {
