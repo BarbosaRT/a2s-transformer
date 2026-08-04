@@ -6,7 +6,7 @@ for tokenization in kern st_plus midi2score; do
         --model_type transformer \
         --audio_mode spectrogram \
         --tokenization "$tokenization" \
-        --batch_size 20 \
+        --batch_size 16 \
         --patience 10 \
         --attn_window 100 \
         --epochs 150 \
