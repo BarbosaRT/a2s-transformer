@@ -47,7 +47,7 @@ class A2STransformer(LightningModule):
         ytest_i2w=None,
         attn_window=-1,
         teacher_forcing_prob=0.5,
-        tokenization: str = "kern",
+        tokenization: str = "kern", verbose_summary=False
     ):
         super(A2STransformer, self).__init__()
         # Save hyperparameters
@@ -75,7 +75,8 @@ class A2STransformer(LightningModule):
             padding_idx=self.padding_idx,
             attn_window=attn_window,
         )
-        self.summary()
+        if verbose_summary:
+            self.summary()
         # Loss
         self.compute_loss = CrossEntropyLoss(ignore_index=self.padding_idx)
         # Predictions
@@ -100,23 +101,33 @@ class A2STransformer(LightningModule):
         )
 
     def configure_optimizers(self):
-        #TODO: Return this to normal (when doing final training)
         optimizer = torch.optim.AdamW(self.parameters(), betas=(0.9, 0.98), lr=1e-4)
-        
+
+        total_steps = None
+        try:
+            if self.trainer is not None:
+                est = self.trainer.estimated_stepping_batches
+                if est != float("inf") and est > 0:
+                    total_steps = int(est)
+        except (RuntimeError, AttributeError):
+            pass
+
+        if total_steps is None:
+            total_steps = 85 * 150
+
         scheduler = torch.optim.lr_scheduler.OneCycleLR(
             optimizer,
             max_lr=2e-4,
-            steps_per_epoch=85,   # adjust based on your dataset size and batch size
-            epochs=150,            # match your total number of epochs
-            anneal_strategy='cos', # cosine annealing
-            pct_start=0.2,         # percentage of the cycle spent increasing the learning rate
-            div_factor=25.0,       # initial LR = max_lr / div_factor
+            total_steps=total_steps,
+            anneal_strategy='cos',
+            pct_start=0.2,
+            div_factor=25.0,
         )
         return {
             "optimizer": optimizer,
             "lr_scheduler": {
                 "scheduler": scheduler,
-                "interval": "epoch",  # step once per epoch (use "step" to step per batch instead)
+                "interval": "step",  # step once per batch
             },
         }
 

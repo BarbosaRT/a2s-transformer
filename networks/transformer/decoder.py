@@ -52,7 +52,7 @@ class Decoder(nn.Module):
             emb_dim=embedding_dim,
             dropout_p=dropout_p,
         )
-
+        self.padding_idx = padding_idx
         # Transformer block
         self.attn_window = attn_window
         self.transformer_decoder = nn.TransformerDecoder(
@@ -123,9 +123,9 @@ class Decoder(nn.Module):
         # memory_len.shape = [batch_size]
         # memory_pad_mask.shape = [batch_size, src_sec_len]
         # Value 1 (True) means "ignored" and value 0 (False) means "not ignored"
-        memory_pad_mask = torch.zeros(memory.shape[:2], dtype=torch.float32, device=memory.device)
+        memory_pad_mask = torch.zeros(memory.shape[:2], dtype=torch.bool, device=memory.device)
         for i, l in enumerate(memory_len):
-            memory_pad_mask[i, l:] = 1
+            memory_pad_mask[i, l:] = True
         return memory_pad_mask
 
     @staticmethod
@@ -169,5 +169,5 @@ class Decoder(nn.Module):
         # Pad token to be ignored by the attention mechanism
         # Value 1 (True) means "ignored" and value 0 (False) means "not ignored"
         # tgt_pad_mask.shape = [batch_size, tgt_sec_len]
-        tgt_pad_mask = (tgt == 0).to(torch.float32)
+        tgt_pad_mask = (tgt == self.padding_idx)
         return tgt_mask, tgt_pad_mask
