@@ -5,6 +5,7 @@ import torch
 from lightning.pytorch import Trainer
 from lightning.pytorch.callbacks import EarlyStopping, ModelCheckpoint, RichProgressBar, LearningRateMonitor
 from lightning.pytorch.loggers.wandb import WandbLogger
+from lightning.pytorch.strategies import DDPStrategy
 
 from networks.crnn.model import CTCTrainedCRNN
 from networks.transformer.model import A2STransformer
@@ -178,6 +179,8 @@ def train(
         ),
         LearningRateMonitor(logging_interval="step"),
     ]
+    if strategy == "ddp_find_unused_parameters_true":
+        strategy = DDPStrategy(find_unused_parameters=True)
     trainer = Trainer(
         log_every_n_steps=100,
         logger=WandbLogger(

@@ -10,7 +10,7 @@ import torch.nn.functional as F
 
 MEMORY = joblib.memory.Memory("./joblib_cache", mmap_mode="r", verbose=0)
 NUM_CHANNELS = 1
-IMG_HEIGHT = NUM_FREQ_BINS = 128
+IMG_HEIGHT = NUM_FREQ_BINS = 195
 
 
 def set_pad_index(index: int):
@@ -31,15 +31,6 @@ def get_spectrogram_from_raw_audio(raw_audio: np.ndarray, sr: float) -> np.ndarr
 
     stft_db = librosa.amplitude_to_db(np.abs(np.array(stft)), ref=np.max)
     log_stft = ((1.0 / 80.0) * stft_db) + 1.0
-
-    # Interpolate the frequency axis onto IMG_HEIGHT (128) bins so the log-STFT
-    # matches the encoder's expected input height (IMG_HEIGHT // HEIGHT_REDUCTION).
-    if log_stft.shape[0] != IMG_HEIGHT:
-        old_freqs = stft_frequencies[stft_frequency_filter_max]
-        new_freqs = np.linspace(old_freqs[0], old_freqs[-1], IMG_HEIGHT)
-        log_stft = np.array(
-            [np.interp(new_freqs, old_freqs, frame) for frame in log_stft.T]
-        ).T
 
     return log_stft
 
@@ -71,9 +62,8 @@ def get_mel_spectrogram_from_raw_audio(raw_audio: np.ndarray, sr: float,) -> np.
 
 @MEMORY.cache
 def preprocess_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> torch.Tensor:
-    # Get mel spectrogram (already normalized)
-    # x = get_spectrogram_from_raw_audio(raw_audio, sr)
-    x = get_mel_spectrogram_from_raw_audio(raw_audio, sr)
+    # Get log-STFT spectrogram (already normalized)
+    x = get_spectrogram_from_raw_audio(raw_audio, sr)
     # Convert to PyTorch tensor
     x = np.expand_dims(x, 0)
     x = torch.from_numpy(x)  # [1, freq_bins, time_frames]
@@ -83,7 +73,7 @@ def preprocess_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> t
 
 @MEMORY.cache
 def preprocess_log_stft_audio(raw_audio: np.ndarray, sr: float, dtype=torch.float32) -> torch.Tensor:
-    # Get log-STFT spectrogram (already normalized), 128 frequency bins
+    # Get log-STFT spectrogram (already normalized)
     x = get_spectrogram_from_raw_audio(raw_audio, sr)
     # Convert to PyTorch tensor
     x = np.expand_dims(x, 0)
